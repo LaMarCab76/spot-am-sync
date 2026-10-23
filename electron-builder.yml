@@ -1,0 +1,21 @@
+appId: com.spotamsync.app
+productName: Spot·AM Sync
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**
+  - package.json
+  - '!**/*.map'
+asar: true
+mac:
+  category: public.app-category.music
+  target:
+    - dmg
+win:
+  target:
+    - nsis
+linux:
+  category: Audio
+  target:
+    - AppImage

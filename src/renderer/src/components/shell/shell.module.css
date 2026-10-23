@@ -1,0 +1,402 @@
+.shell {
+  height: 100vh;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg);
+}
+
+/* Top bar doubles as the window's drag handle. */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 4px 8px;
+  -webkit-app-region: drag;
+}
+
+.topbar a,
+.topbar button,
+.topbar input {
+  -webkit-app-region: no-drag;
+}
+
+:global([data-platform='darwin']) .topbar {
+  padding-left: 84px;
+}
+
+:global([data-platform='win32']) .topbar,
+:global([data-platform='linux']) .topbar {
+  padding-right: 150px;
+}
+
+.topLeft,
+.topRight {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topRight {
+  justify-content: flex-end;
+}
+
+.topCenter {
+  flex: 0 1 560px;
+  min-width: 260px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  color: var(--text);
+}
+
+.brandMark {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.brandName {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.homeButton {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--control);
+  color: var(--text);
+}
+
+.homeButton:hover {
+  background: var(--raised);
+}
+
+.search {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.searchIcon {
+  position: absolute;
+  left: 16px;
+  top: 14px;
+  color: var(--text-3);
+  pointer-events: none;
+}
+
+.searchInput {
+  width: 100%;
+  height: 48px;
+  padding: 0 20px 0 48px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: var(--control);
+  font-size: 15px;
+}
+
+.searchInput:focus {
+  border-color: rgba(255, 255, 255, 0.24);
+  outline: none;
+}
+
+.servicePill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: var(--card);
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.servicePill:hover {
+  background: var(--raised);
+}
+
+.servicePill.off {
+  color: var(--text-4);
+}
+
+.avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--control);
+  color: var(--text);
+}
+
+.avatar:hover {
+  background: var(--raised);
+}
+
+.avatar[aria-current='page'] {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  gap: 8px;
+}
+
+/* Sidebar */
+.sidebar {
+  flex: 0 0 320px;
+  min-width: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 10px;
+  border-radius: var(--r-panel);
+  background: var(--panel);
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.navItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: var(--r-row);
+  color: var(--missing);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.navItem:hover {
+  background: #1c1c1f;
+  color: var(--text);
+}
+
+.navItem[aria-current='page'] {
+  background: var(--selected);
+  color: var(--text);
+}
+
+.navItem[aria-current='page'] svg {
+  color: var(--accent);
+}
+
+.navBadge {
+  margin-left: auto;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 7px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(255, 169, 77, 0.16);
+  color: var(--review);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.divider {
+  height: 1px;
+  margin: 2px 8px;
+  background: var(--hairline);
+}
+
+.libraryHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px 0 12px;
+}
+
+.libraryTitle {
+  flex: 1 1 auto;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.libraryChips {
+  padding: 0 8px;
+  gap: 6px;
+}
+
+.libraryChips button {
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.libraryItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px;
+  border-radius: var(--r-row);
+}
+
+.libraryItem:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.libraryItem[aria-current='page'] {
+  background: var(--selected);
+}
+
+.libraryText {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.libraryName {
+  font-size: 15px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.libraryMeta {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.empty {
+  padding: 8px 12px;
+  font-size: 14px;
+  color: var(--text-3);
+}
+
+/* Main panel */
+.panel {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--r-panel);
+  overflow: clip;
+  background: var(--panel);
+}
+
+.panelScroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 124px;
+}
+
+/* Sync bar content */
+.barLeft {
+  flex: 1 1 220px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.barText {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.barTitle {
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.barSub {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.barCenter {
+  flex: 2 1 340px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.playButton {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  background: #ffffff;
+  color: var(--on-accent);
+}
+
+.barProgress {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.barNumbers {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.barRight {
+  flex: 1 1 180px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+}
