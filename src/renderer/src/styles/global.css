@@ -1,0 +1,152 @@
+:root {
+  /* Surfaces: content is flat and opaque; glass is only for floating controls. */
+  --bg: #000000;
+  --panel: #121214;
+  --card: #1a1a1d;
+  --control: #1f1f22;
+  --selected: #232326;
+  --raised: #2a2a2e;
+  --hairline: rgba(255, 255, 255, 0.08);
+  --hairline-soft: rgba(255, 255, 255, 0.06);
+
+  --text: #ffffff;
+  --text-2: #d0d0d6;
+  --text-3: #b3b3b8;
+  --text-4: #8e8e96;
+
+  /* Monochrome accent; dark text sits on top of it. */
+  --accent: #f2f2f7;
+  --on-accent: #0a0a0b;
+  --accent-tint: rgba(242, 242, 247, 0.12);
+
+  --review: #ffb866;
+  --review-dot: #ffa94d;
+  --review-tint: rgba(255, 169, 77, 0.14);
+  --missing: #c4c4cc;
+  --danger: #ff8a8a;
+  --danger-tint: rgba(255, 107, 107, 0.12);
+
+  /* Service colors only mark origin and destination, never fill buttons. */
+  --spotify: #1ed760;
+  --apple: #ff4e6b;
+
+  --glass: rgba(24, 24, 28, 0.3);
+  --glass-bar: rgba(30, 30, 34, 0.58);
+  --glass-dense: rgba(30, 30, 34, 0.78);
+  --glass-fx: blur(16px) saturate(180%);
+  --glass-edge: inset 0 1px 0 rgba(255, 255, 255, 0.3), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  --glass-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+
+  --r-panel: 12px;
+  --r-card: 16px;
+  --r-row: 10px;
+  --r-glass: 24px;
+
+  --font-text: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter Variable', system-ui, 'Segoe UI', sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter Variable', system-ui, sans-serif;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-text);
+  font-size: 15px;
+  letter-spacing: -0.01em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+img {
+  display: block;
+}
+
+input::placeholder {
+  color: #9a9aa2;
+}
+
+:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+ul,
+ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+
+.spin {
+  animation: spin 1.4s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+  * {
+    scroll-behavior: auto !important;
+  }
+}
