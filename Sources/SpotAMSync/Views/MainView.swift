@@ -2,11 +2,12 @@ import SwiftUI
 import SyncCore
 
 enum AppDestination: String, CaseIterable, Identifiable {
-    case overview, review, matches, playlists, activity, history, connections
+    case overview, manual, review, matches, playlists, activity, history, connections
     var id: String { rawValue }
     var title: String {
         switch self {
         case .overview: return "Resumen"
+        case .manual: return "Agregar a Apple Music"
         case .review: return "Revisar cambios"
         case .matches: return "Coincidencias"
         case .playlists: return "Playlists"
@@ -18,6 +19,7 @@ enum AppDestination: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .overview: return "square.grid.2x2"
+        case .manual: return "checklist.unchecked"
         case .review: return "checklist"
         case .matches: return "arrow.triangle.branch"
         case .playlists: return "music.note.list"
@@ -42,6 +44,7 @@ struct MainView: View {
                 Group {
                     switch destination ?? .overview {
                     case .overview: OverviewView(navigate: navigate)
+                    case .manual: ManualChecklistView(manual: model.manualChecklist)
                     case .review: ReviewView(navigate: navigate)
                     case .matches: MatchesView()
                     case .playlists: PlaylistsView()
@@ -91,6 +94,7 @@ struct MainView: View {
             List(selection: $destination) {
                 Section("Bibliotecas") {
                     navigationRow(.overview)
+                    navigationRow(.manual)
                     navigationRow(.review)
                     navigationRow(.matches)
                     navigationRow(.playlists)
@@ -156,8 +160,8 @@ struct MainView: View {
         HStack(spacing: 7) {
             if model.isBusy { ProgressView().controlSize(.mini) }
             else { Image(systemName: "music.note").foregroundStyle(SyncStyle.green) }
-            Text(model.statusText.isEmpty ? "Listo para conectar tus bibliotecas" : model.statusText)
-                .lineLimit(1).help(model.statusText)
+            Text(model.displayedStatusText.isEmpty ? "Listo para conectar tus bibliotecas" : model.displayedStatusText)
+                .lineLimit(1).help(model.displayedStatusText)
             Spacer(minLength: 8)
             Text(model.isDemo ? "Demostración" : "Spotify + Apple Music").foregroundStyle(.tertiary)
         }.font(.system(size: 10)).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.vertical, 9)

@@ -15,7 +15,8 @@ let package = Package(
         .target(name: "MusicProviders", dependencies: ["SyncCore"]),
         .executableTarget(name: "SpotAMSync", dependencies: ["SyncCore", "MusicProviders"]),
         .testTarget(name: "SyncCoreTests", dependencies: ["SyncCore"]),
-        .testTarget(name: "MusicProvidersTests", dependencies: ["MusicProviders", "SyncCore"])
+        .testTarget(name: "MusicProvidersTests", dependencies: ["MusicProviders", "SyncCore"]),
+        .testTarget(name: "SpotAMSyncTests", dependencies: ["SpotAMSync", "SyncCore"])
     ],
     swiftLanguageModes: [.v5]
 )

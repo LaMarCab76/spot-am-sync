@@ -34,7 +34,23 @@ Se usa Authorization Code con PKCE y verificación de `state`. No se solicita cl
 
 Las apps nuevas en Development Mode admiten hasta cinco usuarios autorizados y necesitan que su propietario tenga Spotify Premium. El acceso a playlists ajenas puede estar restringido. Una playlist que no puede leerse queda marcada como incompleta; nunca se considera vacía. Ver [quota modes](https://developer.spotify.com/documentation/web-api/concepts/quota-modes) y [cambios de API](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide).
 
-## Conectar Apple Music
+## Lista manual para Apple Music, sin membresía Developer
+
+La sección **Agregar a Apple Music** compara las canciones de Spotify con una exportación local de Música y prepara una lista que podés ir marcando. Sólo necesita la conexión de Spotify: no usa MusicKit ni solicita permiso para controlar Música.
+
+1. En Música del Mac, elegí **Archivo → Biblioteca → Exportar biblioteca…** y guardá el XML.
+2. En SpotAM Sync, abrí **Agregar a Apple Music** e importá ese archivo.
+3. Conectá Spotify desde **Conexiones** y generá la lista. Se incluyen canciones de playlists, canciones guardadas y pistas de álbumes guardados, sin repetir una fila por cada aparición en una playlist.
+4. Usá **Buscar en Apple Music** para localizar cada canción, agregala desde Música y marcala en la lista. Podés desmarcarla si necesitás revisarla otra vez.
+5. Para comprobar incorporaciones, exportá de nuevo la biblioteca de Música, importá el XML actualizado y volvé a comparar.
+
+Los filtros separan pendientes, coincidencias para revisar, marcas manuales y canciones presentes en la exportación. Las marcas y la última lista se guardan localmente para continuar después de cerrar la app; quedan separadas por cuenta de Spotify y biblioteca de Música. El ejemplo de esta pantalla usa datos ficticios y no reemplaza la lista real guardada.
+
+**Una marca sólo registra tu avance:** no agrega canciones ni confirma cambios en Apple Music. “Presente” significa que se encontró una coincidencia compatible en el XML importado. La app muestra las fechas de los inventarios; una exportación anterior puede no reflejar cambios recientes ni todo el estado cloud. Las versiones ambiguas, los metadatos insuficientes y las lecturas parciales quedan para revisión. Los identificadores locales del XML nunca se convierten en identificadores del catálogo.
+
+El XML se procesa en el Mac. La búsqueda se abre únicamente cuando pulsás el botón de una canción. No se habilitan eliminaciones ni otras escrituras en Música dentro de este flujo.
+
+## Conectar Apple Music mediante la integración oficial
 
 La integración oficial requiere que quien registra y distribuye la app tenga una membresía del **Apple Developer Program**, una app correctamente firmada y un App ID explícito con MusicKit habilitado. Los usuarios del grupo sólo necesitan autorizar sus bibliotecas; no necesitan ser desarrolladores. El build local ad hoc sirve para desarrollar, usar la demostración y conectar Spotify; **no habilita MusicKit por sí solo**.
 

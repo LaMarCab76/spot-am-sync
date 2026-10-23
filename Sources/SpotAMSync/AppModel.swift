@@ -28,8 +28,12 @@ final class AppModel: ObservableObject {
     @Published var lastResult: RunSummary?
     @Published var canResume = false
     @Published var isReconciling = false
+    let manualChecklist = ManualChecklistModel()
+    private var manualChanges: AnyCancellable?
 
-    var isBusy: Bool { [.connecting, .analyzing, .syncing].contains(phase) }
+    var isBusy: Bool { [.connecting, .analyzing, .syncing].contains(phase) || manualChecklist.isBusy }
+    var displayedStatusText: String { manualChecklist.isBusy && phase == .idle ? manualChecklist.statusText : statusText }
+    var canGenerateManualChecklist: Bool { accounts[.spotify] != nil && !isDemo && !isBusy && manualChecklist.library != nil }
     var canAnalyze: Bool { accounts.count == 2 && !isBusy }
     var canExecute: Bool { accounts.count == 2 && snapshots.count == 2 && snapshots.allSatisfy(\.complete) && !selectedOperations.isEmpty && !isBusy }
     var selectedOperations: [SyncOperation] { plan?.executable.filter { selectedOperationIDs.contains($0.id) } ?? [] }
@@ -44,6 +48,9 @@ final class AppModel: ObservableObject {
     private var capabilities: [MusicService: ProviderCapabilities] = [.spotify: .spotify, .appleMusic: .appleMusic]
 
     init() {
+        manualChanges = manualChecklist.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
         do {
             let base: URL
             if let override = ProcessInfo.processInfo.environment["SPOTAM_DATA_DIR"] {
@@ -55,6 +62,23 @@ final class AppModel: ObservableObject {
             store = storage; executor = SyncExecutor(store: storage)
             refreshHistory()
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    /// The manual workflow reads Spotify only. The XML is never treated as a
+    /// live Apple authorization or sent to the synchronization executor.
+    func generateManualChecklist() {
+        guard canGenerateManualChecklist, let provider = providers[.spotify],
+              let expected = accounts[.spotify] else { return }
+        manualChecklist.generate(isDemo: false) {
+            let snapshot = try await provider.fetchLibrary()
+            try Task.checkCancellation()
+            guard snapshot.account.service == .spotify,
+                  snapshot.account.id == expected.id,
+                  snapshot.account.connectionRevision == expected.connectionRevision else {
+                throw SyncExecutionError.stale("La conexión de Spotify cambió mientras se leía la biblioteca. Volvé a generar la lista.")
+            }
+            return snapshot
+        }
     }
 
     func connectSpotify() {
@@ -247,7 +271,8 @@ final class AppModel: ObservableObject {
             statusText = "Deteniendo nuevas operaciones y comprobando la petición en curso…"
             if isReconciling { workTask?.cancel() }
             else { Task { await executor?.cancel() } }
-        } else { workTask?.cancel() }
+        } else if manualChecklist.isBusy { manualChecklist.cancel() }
+        else { workTask?.cancel() }
     }
 
     func resume() {

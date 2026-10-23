@@ -22,6 +22,8 @@ La edición de playlists mediante `MusicLibrary.edit` sólo está documentada pa
 
 ## Investigación de automatización local
 
+La app ofrece **Agregar a Apple Music**, un flujo manual que importa la exportación XML de Música, compara sus pistas con Spotify y conserva una lista marcable. No requiere MusicKit ni una membresía Developer. Las casillas son anotaciones del usuario: no escriben en Música ni prueban que el servicio haya incorporado la canción. La evidencia “presente” procede exclusivamente de una coincidencia compatible en la exportación, con su fecha y sus límites de cobertura. Ver [uso de la lista manual](../README.md#lista-manual-para-apple-music-sin-membresía-developer).
+
 Actualización: se completó una investigación adicional y una prueba real de exportación XML sin membresía Developer. El lector iTunesLibrary devolvió un inventario vacío contradictorio con Música; el XML sí pudo validarse. Ver [viabilidad del modo local](LOCAL_MUSIC_FEASIBILITY.md) para evidencia, límites e integración propuesta. Esto no habilita escrituras locales.
 
 El diccionario instalado de Música (`/System/Applications/Music.app/Contents/Resources/com.apple.Music.sdef`) declara `delete`, `duplicate`, `make`, playlists y tracks con persistent IDs. `move` documenta mover playlists, no un contrato de reordenamiento de canciones. La biblioteca combina tipos de contenido local y cloud y no ofrece un vínculo probado con todos los identificadores REST.

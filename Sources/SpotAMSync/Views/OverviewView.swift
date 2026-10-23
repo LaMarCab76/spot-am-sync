@@ -13,6 +13,18 @@ struct OverviewView: View {
                     Button { navigate(.connections) } label: { Label("Conexiones", systemImage: "link") }
                         .padding(.top, 25)
                 }
+                SurfaceCard {
+                    HStack(spacing: 18) {
+                        Image(systemName: "checklist").font(.title2).foregroundStyle(SyncStyle.coral)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Agregá los faltantes a Apple Music").font(.headline)
+                            Text("Compará Spotify con una exportación de Música y llevá una lista de las canciones que vas agregando. Sin membresía Apple Developer.")
+                                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 0)
+                        Button("Abrir lista manual") { navigate(.manual) }.controlSize(.large)
+                    }
+                }
                 HStack(spacing: 8) {
                     workflowStep("1", title: "Conectar", active: model.accounts.count < 2)
                     Image(systemName: "chevron.right").foregroundStyle(.tertiary)
@@ -63,7 +75,7 @@ struct OverviewView: View {
                 if model.isBusy {
                     HStack(spacing: 12) {
                         ProgressView().controlSize(.small)
-                        Text(model.statusText).font(.callout).foregroundStyle(.secondary)
+                        Text(model.displayedStatusText).font(.callout).foregroundStyle(.secondary)
                         Spacer()
                         Button("Cancelar") { model.cancel() }
                     }

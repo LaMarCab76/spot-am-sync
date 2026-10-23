@@ -12,11 +12,12 @@ struct ConnectionsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                PageHeading(eyebrow: "Un buen comienzo", title: "Conectá tu música", subtitle: "Autorizá cada servicio para leer tus bibliotecas. Los cambios se revisan y se confirman en un paso separado.")
+                PageHeading(eyebrow: "Un buen comienzo", title: "Conectá tu música", subtitle: "Conectá Spotify para preparar tu lista manual. La conexión oficial de Apple Music es opcional y permite las operaciones compatibles del servicio.")
+                Notice(title: "Apple Music sin membresía Developer", message: "En Agregar a Apple Music podés importar una biblioteca XML exportada desde Música, comparar las canciones de Spotify y marcar las que vas agregando. Para ese flujo sólo necesitás conectar Spotify.", symbol: "checklist", color: SyncStyle.green)
                 if model.isBusy {
                     HStack(spacing: 11) {
                         ProgressView().controlSize(.small)
-                        Text(model.statusText).font(.callout).foregroundStyle(.secondary)
+                        Text(model.displayedStatusText).font(.callout).foregroundStyle(.secondary)
                         Spacer()
                         Button("Cancelar") { model.cancel() }
                     }

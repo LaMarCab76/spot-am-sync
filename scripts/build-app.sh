@@ -47,5 +47,5 @@ if [ -d "$APP_DIR" ]; then /bin/rm -rf "$APP_DIR"; fi
 /bin/mv "$STAGING_APP" "$APP_DIR"
 printf 'App creada: %s\n' "$APP_DIR"
 if [ "$SIGNING_IDENTITY" = "-" ]; then
-    printf '%s\n' 'Firma local ad hoc: demostración y Spotify disponibles; Apple Music requiere configurar firma, App ID y MusicKit.'
+    printf '%s\n' 'Firma local ad hoc: demostración, Spotify y lista manual XML disponibles; la conexión oficial de Apple Music requiere configurar firma, App ID y MusicKit.'
 fi
