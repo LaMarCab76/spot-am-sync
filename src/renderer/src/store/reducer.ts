@@ -1,4 +1,5 @@
 import { clockTime, directionEnds, fmt, serviceName } from '../lib/format'
+import { playlistCounts, type PlaylistCounts } from './selectors'
 import type { AppState, Direction, Playlist, Resolution, Run, Settings, StepKind } from './types'
 
 export type Action =
@@ -27,22 +28,26 @@ function startJob(state: AppState, playlistId: string, direction: Direction): Ap
   return { ...state, job: { playlistId, direction, done: 0, total: playlist.total, state: 'running' } }
 }
 
-function finishedRun(playlist: Playlist, direction: Direction, now: Date): Run {
-  const pending = playlist.review + playlist.missing
+/** Builds the history entry from the counts after the decisions made in Revisar. */
+function finishedRun(playlist: Playlist, counts: PlaylistCounts, direction: Direction, now: Date): Run {
+  const { pending } = counts
+  const chosen = counts.matched - playlist.matched
   const { from, to } = directionEnds(direction)
   const steps: Array<[StepKind, string]> = [
     ['ok', `Leímos ${fmt(playlist.total)} canciones de ${serviceName(from)}.`],
     ['ok', `${fmt(playlist.matched)} coincidencias exactas.`]
   ]
-  if (playlist.review > 0) steps.push(['warn', `${fmt(playlist.review)} dudosas, enviadas a Revisar.`])
-  if (playlist.missing > 0) steps.push(['warn', `${fmt(playlist.missing)} no están en ${serviceName(to)}.`])
+  if (chosen > 0) steps.push(['ok', `${fmt(chosen)} con la versión que elegiste en Revisar.`])
+  if (counts.skipped > 0) steps.push(['neutral', `${fmt(counts.skipped)} omitidas por vos.`])
+  if (counts.review > 0) steps.push(['warn', `${fmt(counts.review)} dudosas, enviadas a Revisar.`])
+  if (counts.missing > 0) steps.push(['warn', `${fmt(counts.missing)} no están en ${serviceName(to)}.`])
   steps.push(['ok', playlist.inDestination ? `Playlist actualizada en ${serviceName(to)}.` : `Playlist creada en ${serviceName(to)}.`])
   return {
     id: `run-${now.getTime()}-${playlist.id}`,
     when: `Hoy, ${clockTime(now)}`,
     playlistId: playlist.id,
     direction: direction === 'a2s' ? 'a2s' : 's2a',
-    result: `${fmt(playlist.matched)} de ${fmt(playlist.total)}`,
+    result: `${fmt(counts.matched)} de ${fmt(playlist.total)}`,
     status: pending > 0 ? 'warn' : 'ok',
     label: pending > 0 ? 'Con avisos' : 'Completada',
     duration: 'menos de 1 min',
@@ -98,7 +103,9 @@ export function reducer(state: AppState, action: Action): AppState {
       const playlists = state.playlists.map((p) =>
         p.id === job.playlistId ? { ...p, synced: true, neverSynced: false, inDestination: true, lastSync: 'ahora' } : p
       )
-      const runs = playlist ? [finishedRun(playlist, job.direction, action.now), ...state.runs] : state.runs
+      const runs = playlist
+        ? [finishedRun(playlist, playlistCounts(state, playlist), job.direction, action.now), ...state.runs]
+        : state.runs
       const next: AppState = { ...state, playlists, runs, job: { ...job, done, state: 'done' } }
       const [queued, ...queue] = state.queue
       return queued ? { ...startJob(next, queued.playlistId, queued.direction), queue } : next

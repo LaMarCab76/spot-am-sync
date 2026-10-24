@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createInitialState } from '../data/mock'
 import { reducer, tickStep } from './reducer'
-import { pendingTotal, playlistCounts, playlistStatus, reviewTotals } from './selectors'
+import { pendingTotal, playlistCounts, playlistStatus, reviewTotals, trackState } from './selectors'
 import type { AppState } from './types'
 
 const now = new Date('2026-10-23T21:40:00')
@@ -80,11 +80,34 @@ describe('review', () => {
     const used = reducer(state, { type: 'review/resolve', id: 'luna', resolution: { kind: 'used', candidate: 0 } })
     const skipped = reducer(used, { type: 'review/resolve', id: 'polaroid', resolution: { kind: 'skipped' } })
 
-    expect(playlistCounts(skipped, noches)).toEqual({ matched: 80, review: 5, missing: 1, pending: 6 })
+    expect(playlistCounts(skipped, noches)).toEqual({ matched: 79, review: 5, missing: 1, skipped: 1, pending: 6 })
     expect(pendingTotal(skipped)).toBe(70)
 
     const undone = reducer(skipped, { type: 'review/undo', id: 'luna' })
     expect(pendingTotal(undone)).toBe(71)
+  })
+
+  it('shows resolved songs in the playlist with their decision', () => {
+    const state = createInitialState()
+    const noches = state.playlists.find((p) => p.id === 'noches')!
+    const track = (title: string) => noches.tracks.find((t) => t.title === title)!
+    const used = reducer(state, { type: 'review/resolve', id: 'luna', resolution: { kind: 'used', candidate: 0 } })
+    const skipped = reducer(used, { type: 'review/resolve', id: 'polaroid', resolution: { kind: 'skipped' } })
+
+    expect(trackState(skipped, noches, track('Bajo la Luna de Enero'))).toBe('ok')
+    expect(trackState(skipped, noches, track('Polaroid'))).toBe('skipped')
+    expect(trackState(skipped, noches, track('Verano Eterno (Remix)'))).toBe('rev')
+    expect(trackState(skipped, noches, track('Marea Alta'))).toBe('ok')
+  })
+
+  it('records a new sync with the decisions already made', () => {
+    const start = { ...createInitialState(), job: null }
+    const resolved = reducer(start, { type: 'review/resolve', id: 'luna', resolution: { kind: 'used', candidate: 0 } })
+    const done = runToCompletion(reducer(resolved, { type: 'sync/start', playlistIds: ['noches'], direction: 's2a' }))
+
+    expect(done.runs[0]).toMatchObject({ playlistId: 'noches', result: '79 de 86', review: 7, status: 'warn' })
+    expect(done.runs[0].steps).toContainEqual(['ok', '1 con la versión que elegiste en Revisar.'])
+    expect(done.runs[0].steps).toContainEqual(['warn', '5 dudosas, enviadas a Revisar.'])
   })
 })
 
