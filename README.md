@@ -82,6 +82,12 @@ Documentación: [autorización](https://developer.apple.com/documentation/applem
 - Coincidencias por identificadores y metadatos, con revisión manual para ambigüedades.
 - Vínculos manuales entre playlists y protección de playlists seleccionadas.
 
+Las búsquedas conservan los candidatos recibidos aunque falle una página posterior. La interfaz diferencia una búsqueda completa, limitada, fallida o parcialmente fallida de una ausencia de equivalencias. Apple completa las referencias adicionales de ISRC antes de confirmar una coincidencia única. Si el ISRC no resuelve la canción, ambos servicios prueban título, artista y álbum, y después título y artista. Los alias de biblioteca y catálogo con la misma identidad y metadatos compatibles se evalúan como un solo candidato; las contradicciones permanecen para revisión.
+
+Cada búsqueda dispone de hasta 12 solicitudes de catálogo, contando reintentos, y dos páginas por consulta o relación. La búsqueda de álbumes expande hasta tres ediciones. Estos presupuestos no limitan la lectura de las bibliotecas ni el checklist XML. Si queda información pendiente, no se selecciona una coincidencia automáticamente; se puede elegir manualmente entre los candidatos disponibles sin ocultar que la búsqueda quedó incompleta.
+
+En **Playlists**, **Desvincular** permite quitar una correspondencia obsoleta, incluso si una de las playlists ya no existe. La acción guarda la decisión, revoca la aprobación anterior y recalcula la vista previa. Las modificaciones remotas siguen requiriendo confirmación.
+
 Los “Me gusta” de Spotify se tratan como canciones guardadas. Los favoritos de Apple no se modifican. Guardar parte de un álbum no equivale a guardar su edición completa.
 
 Una canción “suelta” es una canción guardada que no se encontró en las playlists analizadas. El resumen incluye el detalle de esas canciones y de los álbumes completos sin pistas presentes en playlists. Los álbumes parciales aportan sólo sus pistas guardadas. Si faltan playlists, contenidos o identificadores, la clasificación queda por confirmar; no se presenta un total definitivo.
@@ -103,6 +109,10 @@ La automatización de Música en macOS requiere validación adicional de identid
 5. Relee el servicio para comprobar el resultado, incluyendo orden y repeticiones.
 6. Un timeout de escritura se considera incierto hasta reconciliarlo. No se repite ciegamente.
 7. Cambios externos y efectos adicionales del servicio detienen la ejecución para un nuevo análisis.
+
+Las operaciones compuestas se desglosan antes de ejecutarse: cada petición de playlist tiene su propio registro y cada canción o álbum de biblioteca conserva su resultado individual dentro del lote HTTP. La creación guarda y verifica el ID de la playlist antes de enviar sus canciones. Un rechazo explícito sin una escritura previa incierta queda registrado como rechazado y permite preparar un nuevo plan; un timeout conserva la incertidumbre. Por ejemplo, si Spotify guarda 40 canciones y rechaza la siguiente, el nuevo análisis propone sólo la faltante.
+
+Los nuevos registros comparten las instantáneas de evidencia en `executionSnapshots` y las referencian desde cada ejecución para evitar repetir la biblioteca por cada canción. La app sigue leyendo registros anteriores, pero no reanuda sus escrituras compuestas: permite comprobarlos mediante lectura y exige un nuevo plan. Las escrituras antiguas que sigan inciertas continúan bloqueando operaciones que se solapen.
 
 **Cancelar** detiene nuevas operaciones y reconcilia la que estaba en curso. **Comprobar pendientes** sólo lee el servicio para resolver resultados inciertos, incluso después de reiniciar y reconectar cuando puede verificarse la misma identidad. Para enviar nuevas operaciones hay que analizar y confirmar una nueva vista previa. Cambiar el modo, las protecciones o las correspondencias revoca las aprobaciones anteriores.
 

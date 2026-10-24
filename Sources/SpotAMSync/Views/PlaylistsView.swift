@@ -100,6 +100,14 @@ struct PlaylistsView: View {
                         ServiceMark(service: .appleMusic, size: 23)
                         Text(playlists(.appleMusic).first { $0.id == link.appleMusicID }?.name ?? "Playlist no disponible")
                             .frame(maxWidth: .infinity, alignment: .leading)
+                        if !playlists(.spotify).contains(where: { $0.id == link.spotifyID }) || !playlists(.appleMusic).contains(where: { $0.id == link.appleMusicID }) {
+                            StatusPill(title: "Vínculo pendiente", color: SyncStyle.coral)
+                        }
+                        Button("Desvincular") {
+                            model.unlinkPlaylists(link)
+                            notice = "Vínculo quitado. Revisá la nueva propuesta antes de aplicar cambios."
+                        }.disabled(model.isBusy)
+                            .help("Quita la correspondencia guardada y recalcula la vista previa. No modifica playlists en los servicios.")
                     }.font(.callout).padding(.vertical, 3)
                 }
             }

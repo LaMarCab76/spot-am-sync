@@ -3,7 +3,7 @@ import Foundation
 /// Local, conservative matching. An identifier is evidence, never a unique key
 /// across editions. A caller can present review candidates for a manual choice.
 public enum CatalogMatcher {
-    public static func track(_ source: Track, candidates: [Track], sourceService: MusicService) -> TrackMatch {
+    public static func track(_ source: Track, candidates: [Track], sourceService: MusicService, coverage: CatalogSearchCoverage? = nil) -> TrackMatch {
         guard source.available, !source.isLocal, !source.playableID.isEmpty else {
             return TrackMatch(sourceService: sourceService, source: source, confidence: .unavailable,
                               reason: "La canción de origen es local o no está disponible en el catálogo.")
@@ -26,22 +26,25 @@ public enum CatalogMatcher {
                !sameText(source.albumTitle, candidate.albumTitle) { return false }
             return sameCode(source.isrc, candidate.isrc) || sameText(source.albumTitle, candidate.albumTitle)
         }
-        let selected = exact.count == 1 && unambiguousIdentity(exact[0], in: plausible) ? exact[0] : nil
-        return TrackMatch(sourceService: sourceService, source: source, candidates: plausible, selected: selected,
+        let complete = coverage == nil || coverage == .complete
+        let selected = complete && exact.count == 1 && unambiguousIdentity(exact[0], in: plausible) ? exact[0] : nil
+        var result = TrackMatch(sourceService: sourceService, source: source, candidates: plausible, selected: selected,
                           confidence: selected != nil ? .exact : (plausible.isEmpty ? .unavailable : .review),
                           reason: selected != nil ? "Identidad, edición, duración y metadatos compatibles; un único candidato."
                               : (plausible.isEmpty ? "No hay candidatos disponibles en el catálogo consultado."
                                  : "Revisá la edición, la duración, el contenido explícito o los candidatos con el mismo ISRC."))
+        result.searchCoverage = coverage
+        if !complete { result.confidence = .review; result.reason = "La búsqueda no terminó; no se puede confirmar ausencia ni una coincidencia única." }
+        return result
     }
 
-    public static func album(_ source: Album, candidates: [Album], sourceService: MusicService) -> AlbumMatch {
+    public static func album(_ source: Album, candidates: [Album], sourceService: MusicService, coverage: CatalogSearchCoverage? = nil) -> AlbumMatch {
         guard source.available, !source.playableID.isEmpty else {
             return AlbumMatch(sourceService: sourceService, source: source, confidence: .unavailable,
                               reason: "El álbum de origen no está disponible.")
         }
-        var seen = Set<Album>()
-        let plausible = candidates.filter {
-            $0.available && !$0.playableID.isEmpty && seen.insert($0).inserted &&
+        let plausible = uniqueAlbums(candidates).filter {
+            $0.available && !$0.playableID.isEmpty &&
             (sameCode(source.upc, $0.upc) || (sameText(source.title, $0.title) && sameText(source.artist, $0.artist)))
         }
         let exact = plausible.filter { candidate in
@@ -57,12 +60,16 @@ public enum CatalogMatcher {
             // A title alone is never sufficient to identify an album.
             return sameCode(source.upc, candidate.upc) && source.tracks.isEmpty && candidate.tracks.isEmpty
         }
-        let selected = exact.count == 1 && plausible.filter({ $0.playableID == exact[0].playableID }).count == 1 ? exact[0] : nil
-        return AlbumMatch(sourceService: sourceService, source: source, candidates: plausible, selected: selected,
+        let complete = coverage == nil || coverage == .complete
+        let selected = complete && exact.count == 1 && plausible.filter({ $0.playableID == exact[0].playableID }).count == 1 ? exact[0] : nil
+        var result = AlbumMatch(sourceService: sourceService, source: source, candidates: plausible, selected: selected,
                           confidence: selected != nil ? .exact : (plausible.isEmpty ? .unavailable : .review),
                           reason: !source.isCompleteAlbum ? "El origen contiene canciones sueltas del álbum; no se debe guardar la edición completa."
                               : (selected != nil ? "Un único álbum completo con edición y contenido compatibles."
                                  : "El título no alcanza para identificar la edición del álbum; hace falta revisar el catálogo."))
+        result.searchCoverage = coverage
+        if !complete { result.confidence = .review; result.reason = "La búsqueda de álbumes no terminó; las ediciones pendientes requieren revisión." }
+        return result
     }
 
     static func normalized(_ value: String) -> String {
@@ -98,9 +105,22 @@ public enum CatalogMatcher {
         return Set(normalized(value).split(separator: " ").map(String.init)).intersection(markers)
     }
 
-    private static func unique(_ candidates: [Track]) -> [Track] {
+    public static func unique(_ candidates: [Track]) -> [Track] {
         var seen = Set<Track>()
-        return candidates.filter { seen.insert($0).inserted }
+        return candidates.filter { seen.insert(canonical($0)).inserted }
+    }
+
+    private static func canonical(_ track: Track) -> Track {
+        var value = track; value.id = track.playableID; value.catalogID = track.playableID; return value
+    }
+
+    public static func uniqueAlbums(_ candidates: [Album]) -> [Album] {
+        var seen = Set<Album>()
+        return candidates.filter { album in
+            var value = album; value.id = album.playableID; value.catalogID = album.playableID
+            value.tracks = album.tracks.map(canonical)
+            return seen.insert(value).inserted
+        }
     }
 
     private static func unambiguousIdentity(_ candidate: Track, in candidates: [Track]) -> Bool {

@@ -59,11 +59,12 @@ struct ProviderHTTP: Sendable {
         try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     }
 
-    func send(_ request: URLRequest) async throws -> ProviderHTTPResponse {
+    func send(_ request: URLRequest, budget: CatalogRequestBudget? = nil) async throws -> ProviderHTTPResponse {
         let read = request.httpMethod == nil || request.httpMethod == "GET"
         var waited: TimeInterval = 0
         for attempt in 0..<(read ? retry.maximumReadAttempts : 1) {
             try Task.checkCancellation()
+            try await budget?.claim()
             let response: ProviderHTTPResponse
             do { response = try await transport.send(request) }
             catch {
@@ -81,8 +82,13 @@ struct ProviderHTTP: Sendable {
                 delay <= retry.maximumDelay && waited + delay <= retry.maximumTotalDelay {
                 try await sleep(delay); waited += delay; continue
             }
-            if !read && ((500...599).contains(response.statusCode) || response.statusCode == 408) {
-                throw ProviderError.uncertainWrite("El servidor falló durante una escritura. Releé el estado antes de reintentar.")
+            if !read {
+                if [400, 404, 405, 409, 413, 415, 422].contains(response.statusCode) {
+                    throw ProviderError.rejectedWrite("El servicio rechazó la escritura (HTTP \(response.statusCode)). Revisá la vista previa antes de volver a enviarla.")
+                }
+                if ![401, 403, 429].contains(response.statusCode) {
+                    throw ProviderError.uncertainWrite("El servidor devolvió una respuesta incierta durante una escritura. Releé el estado antes de reintentar.")
+                }
             }
             throw error
         }
@@ -167,12 +173,20 @@ struct CollectedPage: Sendable {
     var items: [JSONValue] = []
     var complete = true
     var notes: [String] = []
+    var limited = false
+    var failed = false
+    var authorizationFailed = false
+    var searchCoverage: CatalogSearchCoverage {
+        if complete { return .complete }
+        if limited && !failed { return .limited }
+        return items.isEmpty ? .failed : .partialFailure
+    }
 }
 
 /// Collects every page, preserves already-read data on failure, and distinguishes
 /// a genuine empty collection from a forbidden/malformed/truncated collection.
 func collectPages(origin: APIOrigin, path: String, initial: JSONValue? = nil,
-                  spotify: Bool, envelope: String? = nil,
+                  spotify: Bool, envelope: String? = nil, maximumPages: Int = 10_000, preserveAuthorizationFailure: Bool = false,
                   fetch: (URL) async throws -> JSONValue) async throws -> CollectedPage {
     var output = CollectedPage(), next: String? = path, first = initial
     var visited = Set<String>(), expected: Int?
@@ -180,6 +194,11 @@ func collectPages(origin: APIOrigin, path: String, initial: JSONValue? = nil,
         let expectedPath = try origin.url(path).path
         while let current = next {
             try Task.checkCancellation()
+            if visited.count >= maximumPages {
+                output.complete = false; output.limited = true
+                output.notes.append("Quedaron páginas de catálogo pendientes al alcanzar el límite de \(maximumPages) páginas.")
+                break
+            }
             let url = try origin.url(current)
             guard url.path == expectedPath, visited.insert(url.absoluteString).inserted, visited.count <= 10_000 else {
                 throw ProviderError.invalidResponse("La paginación cambió de recurso, se repite o supera el límite de seguridad.")
@@ -206,11 +225,23 @@ func collectPages(origin: APIOrigin, path: String, initial: JSONValue? = nil,
         if let expected, output.items.count != expected {
             output.complete = false; output.notes.append("El número de elementos no coincide con el total declarado.")
         }
+    } catch is CatalogBudgetExceeded {
+        output.complete = false; output.limited = true
+        output.notes.append("Se alcanzó el presupuesto de solicitudes de catálogo.")
     } catch is CancellationError { throw CancellationError() }
-    catch ProviderError.unauthorized { throw ProviderError.unauthorized }
-    catch ProviderError.notConnected { throw ProviderError.notConnected }
+    catch ProviderError.unauthorized {
+        guard preserveAuthorizationFailure else { throw ProviderError.unauthorized }
+        output.complete = false; output.failed = true; output.authorizationFailed = true
+        output.notes.append(ProviderError.unauthorized.localizedDescription)
+    }
+    catch ProviderError.notConnected {
+        guard preserveAuthorizationFailure else { throw ProviderError.notConnected }
+        output.complete = false; output.failed = true; output.authorizationFailed = true
+        output.notes.append(ProviderError.notConnected.localizedDescription)
+    }
     catch {
         output.complete = false
+        output.failed = true
         output.notes.append((error as? ProviderError)?.errorDescription ?? "Lectura incompleta.")
     }
     return output

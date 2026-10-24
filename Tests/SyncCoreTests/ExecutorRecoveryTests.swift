@@ -22,8 +22,8 @@ private actor RecoveryProvider: MusicProvider {
         if let action = firstRead { firstRead = nil; await action() }
         var copy = visible; copy.id = UUID(); copy.fetchedAt = Date(); return copy
     }
-    func searchTracks(matching track: Track) async throws -> [Track] { [] }
-    func searchAlbums(matching album: Album) async throws -> [Album] { [] }
+    func searchTracks(matching track: Track) async throws -> CatalogSearchResult<Track> { .init() }
+    func searchAlbums(matching album: Album) async throws -> CatalogSearchResult<Album> { .init() }
     func writes() -> [SyncOperation] { sent }
     func reveal() { visible = actual }
     func setSnapshot(_ snapshot: LibrarySnapshot) { visible = snapshot; actual = snapshot }

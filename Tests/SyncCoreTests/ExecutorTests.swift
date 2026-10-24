@@ -13,8 +13,8 @@ private actor ExecutionTestProvider: MusicProvider {
     func account() async throws -> ConnectedAccount { snapshot.account }
     func capabilities() async -> ProviderCapabilities { .spotify }
     func fetchLibrary() async throws -> LibrarySnapshot { var copy = snapshot; copy.id = UUID(); copy.fetchedAt = Date(); return copy }
-    func searchTracks(matching track: Track) async throws -> [Track] { [] }
-    func searchAlbums(matching album: Album) async throws -> [Album] { [] }
+    func searchTracks(matching track: Track) async throws -> CatalogSearchResult<Track> { .init() }
+    func searchAlbums(matching album: Album) async throws -> CatalogSearchResult<Album> { .init() }
     func setSnapshot(_ value: LibrarySnapshot) { snapshot = value }
     func writeCount() -> Int { writes }
     func perform(_ op: SyncOperation) async throws -> MutationReceipt {

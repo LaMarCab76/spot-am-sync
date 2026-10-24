@@ -77,6 +77,7 @@ private struct MatchCardHeader: View {
     let reason: String
     let selected: Bool
     let confidence: MatchConfidence
+    let coverage: CatalogSearchCoverage?
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .top) {
@@ -85,7 +86,7 @@ private struct MatchCardHeader: View {
                     Text(artist).font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 8)
-                StatusPill(title: selected ? "Seleccionada" : confidence == .unavailable ? "Sin equivalente" : "Por revisar",
+                StatusPill(title: selected ? "Seleccionada" : coverage != nil && coverage != .complete ? coverage!.label : confidence == .unavailable ? "Sin equivalente" : "Por revisar",
                            symbol: selected ? "checkmark.circle" : "questionmark.circle", color: selected ? SyncStyle.green : SyncStyle.coral)
             }
             HStack(spacing: 5) {
@@ -94,6 +95,9 @@ private struct MatchCardHeader: View {
                 Text(service.other.name)
             }.font(.caption).foregroundStyle(.secondary)
             if !reason.isEmpty { Text(reason).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            if selected, let coverage, coverage != .complete {
+                Text(coverage.label + ". La selección es manual; la búsqueda sigue incompleta.").font(.caption).foregroundStyle(SyncStyle.coral)
+            }
         }
     }
 }
@@ -104,7 +108,7 @@ private struct TrackMatchCard: View {
     var body: some View {
         SurfaceCard {
             VStack(alignment: .leading, spacing: 13) {
-                MatchCardHeader(title: match.source.title, artist: match.source.artist, service: match.sourceService, reason: match.reason, selected: match.selected != nil, confidence: match.confidence)
+                MatchCardHeader(title: match.source.title, artist: match.source.artist, service: match.sourceService, reason: match.reason, selected: match.selected != nil, confidence: match.confidence, coverage: match.searchCoverage)
                 TrackMetadata(track: match.source)
                 Divider()
                 if match.candidates.isEmpty {
@@ -165,7 +169,7 @@ private struct AlbumMatchCard: View {
     var body: some View {
         SurfaceCard {
             VStack(alignment: .leading, spacing: 13) {
-                MatchCardHeader(title: match.source.title, artist: match.source.artist, service: match.sourceService, reason: match.reason, selected: match.selected != nil, confidence: match.confidence)
+                MatchCardHeader(title: match.source.title, artist: match.source.artist, service: match.sourceService, reason: match.reason, selected: match.selected != nil, confidence: match.confidence, coverage: match.searchCoverage)
                 Text("\(match.source.tracks.count) canciones\(match.source.isCompleteAlbum ? "" : " · Álbum incompleto")").font(.caption).foregroundStyle(.secondary)
                 Divider()
                 if match.candidates.isEmpty {

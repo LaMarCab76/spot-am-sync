@@ -183,19 +183,22 @@ final class AppModel: ObservableObject {
                         var match = CatalogMatcher.track(track, candidates: candidates, sourceService: source.account.service)
                         let previous = decisions.tracks.first { $0.sourceService == source.account.service && $0.source.id == track.id }
                         if match.confidence != .exact {
-                            var searchFailure: String?
-                            do { candidates += try await provider.searchTracks(matching: track) }
+                            let search: CatalogSearchResult<Track>
+                            do { search = try await provider.searchTracks(matching: track) }
+                            catch is CancellationError { throw CancellationError() }
                             catch {
-                                logs.append("\(track.title): \(error.localizedDescription)")
-                                searchFailure = error.localizedDescription
+                                search = .init(coverage: .failed, notes: [error.localizedDescription])
                             }
-                            match = CatalogMatcher.track(track, candidates: uniqueTracks(candidates), sourceService: source.account.service)
-                            if let searchFailure { match.reason += " Búsqueda incompleta: \(searchFailure)" }
+                            candidates += search.candidates
+                            logs += search.notes.map { "\(track.title): \($0)" }
+                            match = CatalogMatcher.track(track, candidates: uniqueTracks(candidates), sourceService: source.account.service, coverage: search.coverage)
+                            if !search.notes.isEmpty { match.reason += " " + Array(Set(search.notes)).sorted().joined(separator: " ") }
                         }
                         let rememberedCandidates = previous?.selected.map { selected in uniqueTracks(candidates).filter { $0.playableID == selected.playableID } } ?? []
-                        if previous?.source == track, let selected = previous?.selected,
-                           rememberedCandidates.count == 1, let found = rememberedCandidates.first, found == selected, found.available {
-                            match.selected = found; match.confidence = .exact; match.reason = "Correspondencia confirmada anteriormente para estas cuentas."
+                        if previous?.manualSelection == true, previous?.source == track, let selected = previous?.selected,
+                           rememberedCandidates.count == 1, let found = rememberedCandidates.first, CatalogMatcher.unique([found, selected]).count == 1, found.available {
+                            match.selected = found; match.confidence = .exact; match.manualSelection = true
+                            match.reason = "Correspondencia elegida manualmente para estas cuentas. " + match.reason
                         }
                         trackMatches.append(match); processed += 1
                         progress = total == 0 ? 1 : Double(processed) / Double(total)
@@ -206,18 +209,21 @@ final class AppModel: ObservableObject {
                         var candidates = destination.savedAlbums
                         var match = CatalogMatcher.album(album, candidates: candidates, sourceService: source.account.service)
                         if match.confidence != .exact {
-                            var searchFailure: String?
-                            do { candidates += try await provider.searchAlbums(matching: album) }
-                            catch { logs.append("\(album.title): \(error.localizedDescription)"); searchFailure = error.localizedDescription }
-                            var seen = Set<Album>(); candidates = candidates.filter { seen.insert($0).inserted }
-                            match = CatalogMatcher.album(album, candidates: candidates, sourceService: source.account.service)
-                            if let searchFailure { match.reason += " Búsqueda incompleta: \(searchFailure)" }
+                            let search: CatalogSearchResult<Album>
+                            do { search = try await provider.searchAlbums(matching: album) }
+                            catch is CancellationError { throw CancellationError() }
+                            catch { search = .init(coverage: .failed, notes: [error.localizedDescription]) }
+                            candidates = CatalogMatcher.uniqueAlbums(candidates + search.candidates)
+                            logs += search.notes.map { "\(album.title): \($0)" }
+                            match = CatalogMatcher.album(album, candidates: candidates, sourceService: source.account.service, coverage: search.coverage)
+                            if !search.notes.isEmpty { match.reason += " " + Array(Set(search.notes)).sorted().joined(separator: " ") }
                         }
                         let previous = decisions.albums.first { $0.sourceService == source.account.service && $0.source.id == album.id }
-                        let rememberedCandidates = previous?.selected.map { selected in Array(Set(candidates)).filter { $0.playableID == selected.playableID } } ?? []
-                        if previous?.source == album, let selected = previous?.selected,
-                           rememberedCandidates.count == 1, let found = rememberedCandidates.first, found == selected, found.available {
-                            match.selected = found; match.confidence = .exact; match.reason = "Correspondencia confirmada anteriormente para estas cuentas."
+                        let rememberedCandidates = previous?.selected.map { selected in CatalogMatcher.uniqueAlbums(candidates).filter { $0.playableID == selected.playableID } } ?? []
+                        if previous?.manualSelection == true, previous?.source == album, let selected = previous?.selected,
+                           rememberedCandidates.count == 1, let found = rememberedCandidates.first, CatalogMatcher.uniqueAlbums([found, selected]).count == 1, found.available {
+                            match.selected = found; match.confidence = .exact; match.manualSelection = true
+                            match.reason = "Correspondencia elegida manualmente para estas cuentas. " + match.reason
                         }
                         albumMatches.append(match); processed += 1
                         progress = total == 0 ? 1 : Double(processed) / Double(total)
@@ -296,6 +302,7 @@ final class AppModel: ObservableObject {
         guard !isBusy, let i = decisions.tracks.firstIndex(where: { $0.id == matchID }) else { return }
         decisions.tracks[i].selected = decisions.tracks[i].candidates.first { $0.id == targetID }
         decisions.tracks[i].confidence = decisions.tracks[i].selected == nil ? .review : .exact
+        decisions.tracks[i].manualSelection = decisions.tracks[i].selected != nil
         decisions.tracks[i].reason = "Selección manual."
         rebuildPlan(); persistDecisions()
     }
@@ -303,6 +310,7 @@ final class AppModel: ObservableObject {
         guard !isBusy, let i = decisions.albums.firstIndex(where: { $0.id == matchID }) else { return }
         decisions.albums[i].selected = decisions.albums[i].candidates.first { $0.id == targetID }
         decisions.albums[i].confidence = decisions.albums[i].selected == nil ? .review : .exact
+        decisions.albums[i].manualSelection = decisions.albums[i].selected != nil
         decisions.albums[i].reason = "Selección manual."
         rebuildPlan(); persistDecisions()
     }
@@ -310,6 +318,11 @@ final class AppModel: ObservableObject {
         guard !isBusy else { return }
         decisions.playlists.removeAll { $0.spotifyID == spotifyID || $0.appleMusicID == appleMusicID }
         decisions.playlists.append(PlaylistLink(spotifyID: spotifyID, appleMusicID: appleMusicID))
+        rebuildPlan(); persistDecisions()
+    }
+    func unlinkPlaylists(_ link: PlaylistLink) {
+        guard !isBusy, decisions.playlists.contains(link) else { return }
+        decisions.playlists.removeAll { $0 == link }
         rebuildPlan(); persistDecisions()
     }
     func protectPlaylist(service: MusicService, id: String, protected: Bool) {
@@ -396,7 +409,7 @@ final class AppModel: ObservableObject {
         Task { do { try await store.saveDecisions(value, accountPair: key) } catch { errorMessage = error.localizedDescription } }
     }
     private func uniqueTracks(_ tracks: [Track]) -> [Track] {
-        var seen = Set<Track>(); return tracks.filter { seen.insert($0).inserted }
+        CatalogMatcher.unique(tracks)
     }
     private func revokePreviousApprovals() {
         guard let store, !accounts.isEmpty else { return }

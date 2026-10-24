@@ -10,6 +10,7 @@ import SyncCore
 /// https://developer.apple.com/documentation/applemusicapi/add-a-resource-to-a-library
 public actor AppleMusicProvider: MusicProvider {
     public nonisolated let service: MusicService = .appleMusic
+    public nonisolated let mutationLimits: MutationLimits? = .init(libraryItems: 100, playlistItems: 100)
     private let http: ProviderHTTP
     private let authorization: any AppleMusicAuthorizing
     private let session: (any AppleMusicSessionTransport)?
@@ -79,13 +80,13 @@ public actor AppleMusicProvider: MusicProvider {
     private func check(_ epoch: UUID) throws {
         try Task.checkCancellation(); guard epoch == generation else { throw ProviderError.notConnected }
     }
-    private func request(_ url: URL, method: String = "GET", body: Data? = nil) async throws -> ProviderHTTPResponse {
+    private func request(_ url: URL, method: String = "GET", body: Data? = nil, budget: CatalogRequestBudget? = nil) async throws -> ProviderHTTPResponse {
         _ = try APIOrigin.apple.url(url.absoluteString)
         let epoch = generation
         var request = URLRequest(url: url); request.httpMethod = method; request.httpBody = body; request.timeoutInterval = 30
         if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         let response: ProviderHTTPResponse
-        do { response = try await http.send(request) }
+        do { response = try await http.send(request, budget: budget) }
         catch ProviderError.unauthorized {
             // No refresh or replay, including writes. The next connect must acquire
             // a grant explicitly and receive a fresh connection revision.
@@ -96,7 +97,7 @@ public actor AppleMusicProvider: MusicProvider {
         else if epoch != generation || Task.isCancelled { throw ProviderError.uncertainWrite("La conexión cambió durante la escritura de Apple Music. Releé la biblioteca.") }
         return response
     }
-    private func get(_ url: URL) async throws -> JSONValue { try JSONValue.decode(await request(url).data) }
+    private func get(_ url: URL, budget: CatalogRequestBudget? = nil) async throws -> JSONValue { try JSONValue.decode(await request(url, budget: budget).data) }
     private func pages(_ path: String, initial: JSONValue? = nil, envelope: String? = nil) async throws -> CollectedPage {
         try await collectPages(origin: .apple, path: path, initial: initial, spotify: false, envelope: envelope) { try await self.get($0) }
     }
@@ -127,7 +128,7 @@ public actor AppleMusicProvider: MusicProvider {
         guard let id = attributes["playParams"]["catalogId"].nonempty else { return (nil, false) }
         return (try await catalogResource(type: catalogType, id: id), true)
     }
-    private func mappedTrack(_ resource: JSONValue, fallback: String) async throws -> MappedTrack {
+    private func mappedTrack(_ resource: JSONValue, fallback: String, budget: CatalogRequestBudget? = nil) async throws -> MappedTrack {
         guard let id = resource["id"].nonempty, ["songs", "library-songs"].contains(resource["type"].string ?? "") else {
             return .init(track: unknownTrack(fallback), complete: false)
         }
@@ -137,13 +138,14 @@ public actor AppleMusicProvider: MusicProvider {
         do {
             if !value["attributes"].isObject {
                 let path = type == "songs" ? "/v1/catalog/\(try storefront())/songs/\(try resourceID(id))" : "/v1/me/library/songs/\(try resourceID(id))"
-                let response = try await get(APIOrigin.apple.url(path))
+                let response = try await get(APIOrigin.apple.url(path), budget: budget)
                 guard let data = response["data"].array, data.count == 1, data[0]["id"].string == id, data[0]["type"].string == type else { throw ProviderError.invalidResponse("Referencia de canción sin detalle válido.") }
                 value = data[0]
             }
             if type == "songs" { catalog = value }
             else { (catalog, complete) = try await resolveCatalog(value, libraryType: "songs", catalogType: "songs") }
-        } catch is CancellationError { throw CancellationError() }
+        } catch is CatalogBudgetExceeded { throw CatalogBudgetExceeded() }
+        catch is CancellationError { throw CancellationError() }
         catch ProviderError.unauthorized { throw ProviderError.unauthorized }
         catch ProviderError.notConnected { throw ProviderError.notConnected }
         catch { complete = false }
@@ -239,42 +241,106 @@ public actor AppleMusicProvider: MusicProvider {
         return (result, libraryComplete && mappingComplete && catalogComplete && valid)
     }
 
-    public func searchTracks(matching track: Track) async throws -> [Track] {
-        try begin(); defer { busy = false }; _ = try account()
-        let path: URL
-        let envelope: String?
-        if let isrc = track.isrc, !isrc.isEmpty {
-            path = try APIOrigin.apple.url("/v1/catalog/\(storefront())/songs", query: [.init(name: "filter[isrc]", value: isrc), .init(name: "limit", value: "100")]); envelope = nil
-        } else {
-            path = try APIOrigin.apple.url("/v1/catalog/\(storefront())/search", query: [.init(name: "term", value: "\(track.title) \(track.artist)"), .init(name: "types", value: "songs"), .init(name: "limit", value: "25")]); envelope = "songs"
-        }
-        let page = try await searchPages(path, envelope: envelope)
-        guard page.complete else { throw ProviderError.invalidResponse("La búsqueda de canciones de Apple Music quedó incompleta.") }
-        return try await mappedTracks(page, context: "search").tracks
-    }
-    private func searchPages(_ url: URL, envelope: String?) async throws -> CollectedPage {
-        try await collectPages(origin: .apple, path: url.absoluteString, spotify: false) { next in
-            let json = try await self.get(next)
-            return envelope.map { json["results"][$0] } ?? json
+    private func searchPages(term: String, type: String, budget: CatalogRequestBudget) async throws -> CollectedPage {
+        let url = try APIOrigin.apple.url("/v1/catalog/\(storefront())/search", query: [.init(name: "term", value: term), .init(name: "types", value: type), .init(name: "limit", value: "25")])
+        return try await collectPages(origin: .apple, path: url.absoluteString, spotify: false, maximumPages: 2, preserveAuthorizationFailure: true) {
+            try await self.get($0, budget: budget)["results"][type]
         }
     }
-    public func searchAlbums(matching album: Album) async throws -> [Album] {
-        try begin(); defer { busy = false }; _ = try account()
-        let url = try APIOrigin.apple.url("/v1/catalog/\(storefront())/search", query: [.init(name: "term", value: "\(album.title) \(album.artist)"), .init(name: "types", value: "albums"), .init(name: "limit", value: "25")])
-        let page = try await searchPages(url, envelope: "albums")
-        guard page.complete else { throw ProviderError.invalidResponse("La búsqueda de álbumes de Apple Music quedó incompleta.") }
-        var result: [Album] = []
-        for (index, item) in page.items.enumerated() {
-            guard let id = item["id"].nonempty, item["type"].string == "albums" else {
-                result.append(Album(id: "unknown:album-search:\(index)", title: "Álbum no disponible", artist: "", isCompleteAlbum: false, available: false)); continue
+
+    private func searchTracks(_ resources: [JSONValue], budget: CatalogRequestBudget) async throws -> CatalogSearchResult<Track> {
+        var result = CatalogSearchResult<Track>()
+        for (index, resource) in resources.enumerated() {
+            do {
+                guard resource["type"].string == "songs" else { throw ProviderError.invalidResponse("Referencia de canción de catálogo inválida.") }
+                let mapped = try await mappedTrack(resource, fallback: "search:\(index)", budget: budget)
+                result.merge(.init(candidates: [mapped.track], coverage: mapped.complete ? .complete : .partialFailure,
+                                   notes: mapped.complete ? [] : ["No se pudo validar toda la información de una canción del catálogo."]))
+            } catch { result.merge(try searchFailure(error)) }
+        }
+        return result
+    }
+
+    private func searchISRC(_ isrc: String, budget: CatalogRequestBudget) async throws -> CatalogSearchResult<Track> {
+        var result = CatalogSearchResult<Track>()
+        do {
+            let url = try APIOrigin.apple.url("/v1/catalog/\(storefront())/songs", query: [.init(name: "filter[isrc]", value: isrc)])
+            let response = try await get(url, budget: budget)
+            guard let data = response["data"].array else { throw ProviderError.invalidResponse("La respuesta ISRC no contiene canciones válidas.") }
+            result.merge(try await searchTracks(data, budget: budget))
+            let references = response["meta"]["filters"]["isrc"][isrc]
+            if !references.isNull {
+                guard let references = references.array else { throw ProviderError.invalidResponse("Las referencias ISRC de Apple Music son inválidas.") }
+                var ids = Set<String>()
+                for reference in references {
+                    guard reference["type"].string == "songs", let id = reference["id"].nonempty else {
+                        throw ProviderError.invalidResponse("Apple Music devolvió una referencia ISRC sin identidad verificable.")
+                    }
+                    ids.insert(try resourceID(id))
+                }
+                let missing = ids.subtracting(data.compactMap { $0["id"].nonempty }).sorted()
+                if !missing.isEmpty {
+                    let lookup = try APIOrigin.apple.url("/v1/catalog/\(storefront())/songs", query: [.init(name: "ids", value: missing.prefix(200).joined(separator: ","))])
+                    let hydrated = try await get(lookup, budget: budget)
+                    guard let resources = hydrated["data"].array else { throw ProviderError.invalidResponse("No se pudieron completar las referencias ISRC.") }
+                    result.merge(try await searchTracks(resources, budget: budget))
+                    if !Set(missing).isSubset(of: Set(resources.compactMap { $0["id"].nonempty })) {
+                        result.merge(.init(coverage: missing.count > 200 ? .limited : .failed, notes: ["Quedaron referencias ISRC sin completar en este territorio."]))
+                    }
+                }
             }
-            let tracksPage = try await relationship(item, base: "/v1/catalog/\(storefront())/albums/\(resourceID(id))", name: "tracks")
-            let tracks = try await mappedTracks(tracksPage, context: "catalog-album:\(id)")
+        } catch { result.merge(try searchFailure(error)) }
+        return result
+    }
+
+    public func searchTracks(matching track: Track) async throws -> CatalogSearchResult<Track> {
+        try begin(); defer { busy = false }; _ = try account()
+        let budget = CatalogRequestBudget()
+        var result = CatalogSearchResult<Track>()
+        if let isrc = track.isrc, !isrc.isEmpty { result = try await searchISRC(isrc, budget: budget) }
+        let metadata = "\(track.title) \(track.artist)"
+        let terms = track.albumTitle.isEmpty ? [metadata] : [metadata + " " + track.albumTitle, metadata]
+        for term in terms {
+            if connected == nil { break }
+            result.candidates = CatalogMatcher.unique(result.candidates)
+            if CatalogMatcher.track(track, candidates: result.candidates, sourceService: .spotify, coverage: result.coverage).selected != nil { break }
+            let page = try await searchPages(term: term, type: "songs", budget: budget)
+            result.merge(.init(coverage: page.searchCoverage, notes: page.notes))
+            result.merge(try await searchTracks(page.items, budget: budget))
+        }
+        result.candidates = CatalogMatcher.unique(result.candidates)
+        return result
+    }
+
+    public func searchAlbums(matching album: Album) async throws -> CatalogSearchResult<Album> {
+        try begin(); defer { busy = false }; _ = try account()
+        let budget = CatalogRequestBudget()
+        let page = try await searchPages(term: "\(album.title) \(album.artist)", type: "albums", budget: budget)
+        var result = CatalogSearchResult<Album>(coverage: page.searchCoverage, notes: page.notes)
+        var expanded = 0, seen = Set<String>()
+        for item in page.items {
+            guard let rawID = item["id"].nonempty, let id = try? resourceID(rawID), item["type"].string == "albums" else {
+                result.merge(.init(coverage: .failed, notes: ["Referencia de álbum de catálogo inválida."])); continue
+            }
+            guard seen.insert(id).inserted else { continue }
             let a = item["attributes"]
-            result.append(Album(id: id, catalogID: id, title: a["name"].string ?? "Álbum sin datos", artist: a["artistName"].string ?? "",
-                upc: a["upc"].nonempty, tracks: tracks.tracks,
-                isCompleteAlbum: tracks.complete && a["trackCount"].int == tracks.tracks.count && !tracks.tracks.isEmpty,
-                available: a["name"].nonempty != nil && a["artistName"].nonempty != nil))
+            var candidate = Album(id: id, catalogID: id, title: a["name"].string ?? "", artist: a["artistName"].string ?? "", upc: a["upc"].nonempty, isCompleteAlbum: false, available: a["name"].nonempty != nil && a["artistName"].nonempty != nil)
+            if expanded < 3 && connected != nil {
+                expanded += 1
+                let included = item["relationships"]["tracks"]
+                let tracksPage = try await collectPages(origin: .apple, path: "/v1/catalog/\(storefront())/albums/\(resourceID(id))/tracks", initial: included["data"].array != nil ? included : nil, spotify: false, maximumPages: 2, preserveAuthorizationFailure: true) { try await self.get($0, budget: budget) }
+                let tracks = try await searchTracks(tracksPage.items, budget: budget)
+                candidate.tracks = tracks.candidates
+                candidate.isCompleteAlbum = tracksPage.complete && tracks.coverage == .complete && a["trackCount"].int == candidate.tracks.count && !candidate.tracks.isEmpty
+                result.merge(.init(candidates: [candidate], coverage: tracksPage.searchCoverage, notes: tracksPage.notes))
+                result.merge(.init(coverage: tracks.coverage, notes: tracks.notes))
+                if tracksPage.complete && tracks.coverage == .complete && (!candidate.isCompleteAlbum || !candidate.available) {
+                    result.merge(.init(coverage: .failed, notes: ["No se pudo validar el contenido completo de una edición del álbum."]))
+                }
+            } else {
+                result.merge(.init(candidates: [candidate], coverage: connected == nil ? .failed : .limited,
+                                   notes: [connected == nil ? "Se necesita reconectar para completar las ediciones pendientes." : "Quedaron ediciones sin expandir; se consultan hasta tres álbumes por búsqueda."]))
+            }
         }
         return result
     }

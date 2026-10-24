@@ -182,6 +182,8 @@ public struct TrackMatch: Codable, Equatable, Sendable, Identifiable {
     public var selected: Track?
     public var confidence: MatchConfidence
     public var reason: String
+    public var searchCoverage: CatalogSearchCoverage?
+    public var manualSelection: Bool?
     public var id: String { "\(sourceService.rawValue):\(source.id)" }
     public init(sourceService: MusicService, source: Track, candidates: [Track] = [], selected: Track? = nil, confidence: MatchConfidence = .review, reason: String = "") {
         self.sourceService = sourceService; self.source = source; self.candidates = candidates
@@ -196,6 +198,8 @@ public struct AlbumMatch: Codable, Equatable, Sendable, Identifiable {
     public var selected: Album?
     public var confidence: MatchConfidence
     public var reason: String
+    public var searchCoverage: CatalogSearchCoverage?
+    public var manualSelection: Bool?
     public var id: String { "\(sourceService.rawValue):\(source.id)" }
     public init(sourceService: MusicService, source: Album, candidates: [Album] = [], selected: Album? = nil, confidence: MatchConfidence = .review, reason: String = "") {
         self.sourceService = sourceService; self.source = source; self.candidates = candidates
@@ -248,12 +252,20 @@ public struct MutationReceipt: Codable, Equatable, Sendable {
 
 public enum ProviderError: Error, LocalizedError, Sendable {
     case notConnected, unauthorized, forbidden(String), rateLimited(seconds: Int), quotaExceeded
-    case unsupported(String), invalidResponse(String), network(String), uncertainWrite(String)
+    case unsupported(String), invalidResponse(String), network(String), uncertainWrite(String), rejectedWrite(String)
+    /// Only positive evidence of non-delivery/rejection qualifies. In particular,
+    /// invalid JSON, transport errors and an absent readback do not qualify.
+    public var definitelyNotApplied: Bool {
+        switch self {
+        case .notConnected, .unauthorized, .forbidden, .rateLimited, .unsupported, .rejectedWrite: return true
+        default: return false
+        }
+    }
     public var errorDescription: String? {
         switch self {
         case .notConnected: return "Conectá la cuenta para continuar."
         case .unauthorized: return "La autorización venció. Volvé a conectar la cuenta."
-        case .forbidden(let s), .unsupported(let s), .invalidResponse(let s), .network(let s), .uncertainWrite(let s): return s
+        case .forbidden(let s), .unsupported(let s), .invalidResponse(let s), .network(let s), .uncertainWrite(let s), .rejectedWrite(let s): return s
         case .rateLimited(let seconds): return "El servicio pidió esperar \(seconds) segundos."
         case .quotaExceeded: return "Se agotó la cuota del servicio. Reanudá más tarde."
         }
@@ -262,10 +274,16 @@ public enum ProviderError: Error, LocalizedError, Sendable {
 
 public protocol MusicProvider: Sendable {
     var service: MusicService { get }
+    /// Non-nil for adapters whose high-level operations require several HTTP writes.
+    var mutationLimits: MutationLimits? { get }
     func account() async throws -> ConnectedAccount
     func capabilities() async -> ProviderCapabilities
     func fetchLibrary() async throws -> LibrarySnapshot
-    func searchTracks(matching track: Track) async throws -> [Track]
-    func searchAlbums(matching album: Album) async throws -> [Album]
+    func searchTracks(matching track: Track) async throws -> CatalogSearchResult<Track>
+    func searchAlbums(matching album: Album) async throws -> CatalogSearchResult<Album>
     func perform(_ operation: SyncOperation) async throws -> MutationReceipt
+}
+
+extension MusicProvider {
+    public var mutationLimits: MutationLimits? { nil }
 }

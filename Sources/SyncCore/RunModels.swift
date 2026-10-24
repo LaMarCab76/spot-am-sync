@@ -28,7 +28,7 @@ public struct RunSummary: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
-public enum ExecutionState: String, Codable, Sendable { case pending, applying, verified, failed, unknown }
+public enum ExecutionState: String, Codable, Sendable { case pending, applying, verified, failed, unknown, rejected }
 
 public struct OperationExecution: Codable, Equatable, Sendable, Identifiable {
     public var id: UUID { operation.id }
@@ -37,8 +37,13 @@ public struct OperationExecution: Codable, Equatable, Sendable, Identifiable {
     public var before: LibrarySnapshot?
     public var receipt: MutationReceipt?
     public var error: String?
-    public init(operation: SyncOperation, state: ExecutionState = .pending, before: LibrarySnapshot? = nil, receipt: MutationReceipt? = nil, error: String? = nil) {
+    public var parentOperationID: UUID?
+    public var creationDependencyID: UUID?
+    /// Used only by RunRecord's compact wire format; decoded records restore `before`.
+    var beforeSnapshotID: UUID?
+    public init(operation: SyncOperation, state: ExecutionState = .pending, before: LibrarySnapshot? = nil, receipt: MutationReceipt? = nil, error: String? = nil, parentOperationID: UUID? = nil, creationDependencyID: UUID? = nil) {
         self.operation = operation; self.state = state; self.before = before; self.receipt = receipt; self.error = error
+        self.parentOperationID = parentOperationID; self.creationDependencyID = creationDependencyID
     }
 }
 
@@ -60,7 +65,7 @@ public struct RunRecord: Codable, Equatable, Sendable, Identifiable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case summary, plan, decisions, executions, checkpoints, finalSnapshots, remainingPlan, isDemo, approvalRevoked
+        case summary, plan, decisions, executions, checkpoints, finalSnapshots, remainingPlan, isDemo, approvalRevoked, executionSnapshots
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -68,11 +73,44 @@ public struct RunRecord: Codable, Equatable, Sendable, Identifiable {
         plan = try values.decode(SyncPlan.self, forKey: .plan)
         decisions = try values.decode(MatchDecisions.self, forKey: .decisions)
         executions = try values.decode([OperationExecution].self, forKey: .executions)
+        let evidence = try values.decodeIfPresent([LibrarySnapshot].self, forKey: .executionSnapshots) ?? []
+        for i in executions.indices {
+            if let id = executions[i].beforeSnapshotID {
+                let matching = evidence.filter { $0.id == id }
+                guard matching.count == 1, executions[i].before == nil else {
+                    throw DecodingError.dataCorruptedError(forKey: .executionSnapshots, in: values, debugDescription: "Missing or contradictory execution evidence")
+                }
+                executions[i].before = matching[0]; executions[i].beforeSnapshotID = nil
+            }
+        }
         checkpoints = try values.decode([LibrarySnapshot].self, forKey: .checkpoints)
         finalSnapshots = try values.decode([LibrarySnapshot].self, forKey: .finalSnapshots)
         remainingPlan = try values.decodeIfPresent(SyncPlan.self, forKey: .remainingPlan)
         isDemo = try values.decode(Bool.self, forKey: .isDemo)
         approvalRevoked = try values.decodeIfPresent(Bool.self, forKey: .approvalRevoked) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        var compact = executions, evidence: [UUID: LibrarySnapshot] = [:]
+        for i in compact.indices {
+            guard let snapshot = compact[i].before else { continue }
+            if let existing = evidence[snapshot.id], existing != snapshot {
+                throw EncodingError.invalidValue(snapshot.id, .init(codingPath: encoder.codingPath, debugDescription: "Conflicting execution snapshot IDs"))
+            }
+            evidence[snapshot.id] = snapshot
+            compact[i].before = nil; compact[i].beforeSnapshotID = snapshot.id
+        }
+        try values.encode(summary, forKey: .summary)
+        try values.encode(plan, forKey: .plan)
+        try values.encode(decisions, forKey: .decisions)
+        try values.encode(compact, forKey: .executions)
+        try values.encode(evidence.values.sorted { $0.id.uuidString < $1.id.uuidString }, forKey: .executionSnapshots)
+        try values.encode(checkpoints, forKey: .checkpoints)
+        try values.encode(finalSnapshots, forKey: .finalSnapshots)
+        try values.encodeIfPresent(remainingPlan, forKey: .remainingPlan)
+        try values.encode(isDemo, forKey: .isDemo)
+        try values.encode(approvalRevoked, forKey: .approvalRevoked)
     }
 }
 

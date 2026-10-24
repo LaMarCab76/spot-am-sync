@@ -38,8 +38,9 @@ public actor SyncExecutor {
             let lhs = $0.element.kind.isDestructive ? 1 : 0, rhs = $1.element.kind.isDestructive ? 1 : 0
             return lhs == rhs ? $0.offset < $1.offset : lhs < rhs
         }.map(\.element)
-        let summary = RunSummary(totalCount: ordered.count, message: "Verificando el estado aprobado…")
-        let record = RunRecord(summary: summary, plan: plan, decisions: decisions, executions: ordered.map { OperationExecution(operation: $0) }, checkpoints: plan.snapshots, isDemo: isDemo)
+        let steps = ordered.flatMap { MutationSteps.prepare($0, limits: providers[$0.service]?.mutationLimits) }
+        let summary = RunSummary(totalCount: steps.count, message: "Verificando el estado aprobado…")
+        let record = RunRecord(summary: summary, plan: plan, decisions: decisions, executions: steps, checkpoints: plan.snapshots, isDemo: isDemo)
         return try await run(record, providers: providers, resuming: false, progress: progress)
     }
 
@@ -100,6 +101,9 @@ public actor SyncExecutor {
             record.summary.status = .running
             record.remainingPlan = nil
             try requireCompleteBackup(record)
+            if resuming && record.executions.contains(where: { $0.parentOperationID == nil && providers[$0.operation.service]?.mutationLimits != nil }) {
+                throw SyncExecutionError.unsafeResume("Este registro es anterior al journal por petición. Comprobá sus pendientes mediante lectura y confirmá un nuevo análisis.")
+            }
             // Publish the approval before provider awaits so a policy change during the very
             // first inventory read can revoke it too.
             if !resuming { try await store.save(record) }
@@ -119,11 +123,18 @@ public actor SyncExecutor {
 
             while let index = record.executions.firstIndex(where: { $0.state == .pending }) {
                 if cancellationRequested { break }
-                if record.executions.contains(where: { $0.state == .unknown || $0.state == .failed }) { break }
+                if record.executions.contains(where: { $0.state == .unknown || $0.state == .failed || $0.state == .rejected }) { break }
                 current = try await fetchAll(record.plan.snapshots, providers: providers)
                 try validate(current, against: record.checkpoints)
                 if cancellationRequested { break }
 
+                if let dependency = record.executions[index].creationDependencyID {
+                    guard let creation = record.executions.first(where: { $0.id == dependency }), creation.state == .verified,
+                          let target = creation.receipt?.createdID else {
+                        throw SyncExecutionError.unsafeResume("Falta verificar la playlist creada antes de agregarle canciones.")
+                    }
+                    record.executions[index].operation.targetID = target
+                }
                 let operation = record.executions[index].operation
                 guard let provider = providers[operation.service], let before = current.first(where: { $0.account.service == operation.service }) else { throw SyncExecutionError.missingProvider }
                 let capabilities = await provider.capabilities()
@@ -131,7 +142,7 @@ public actor SyncExecutor {
                     throw ProviderError.unsupported("La capacidad para \(operation.kind.label.lowercased()) ya no está disponible.")
                 }
                 // Library writes are coalesced to reduce readback cost without losing per-operation journaling.
-                let indices = batchIndices(starting: index, in: record)
+                let indices = batchIndices(starting: index, in: record, limit: provider.mutationLimits?.libraryItems ?? 40)
                 let unsent = indices.map { record.executions[$0] }
                 for i in indices {
                     record.executions[i].state = .applying
@@ -163,9 +174,13 @@ public actor SyncExecutor {
                 }
                 do { receipt = try await provider.perform(combined) }
                 catch { mutationError = error }
-                for i in indices {
+                for (position, i) in indices.enumerated() {
                     if let receipt { record.executions[i].receipt = receipt }
                     if let mutationError { rememberError(mutationError.localizedDescription, at: i, record: &record) }
+                    // A rejected retry cannot erase uncertainty from an earlier send.
+                    if (mutationError as? ProviderError)?.definitelyNotApplied == true, unsent[position].before == nil {
+                        record.executions[i].state = .rejected
+                    }
                 }
                 try await store.save(record)
 
@@ -181,6 +196,7 @@ public actor SyncExecutor {
                     } catch { readError = error; break }
                 }
                 for i in indices {
+                    if record.executions[i].state == .rejected { continue }
                     let op = record.executions[i].operation
                     if let after, let verified = OperationVerifier.receipt(for: op, before: before, after: after, receipt: record.executions[i].receipt) {
                         record.executions[i].state = .verified
@@ -210,7 +226,7 @@ public actor SyncExecutor {
                 record.summary.verifiedCount = record.executions.filter { $0.state == .verified }.count
                 try await store.save(record)
                 await emit(record, "\(record.summary.verifiedCount) de \(record.summary.totalCount) cambios verificados", progress)
-                if unexpectedChanges || record.executions.contains(where: { $0.state == .unknown }) { break }
+                if unexpectedChanges || record.executions.contains(where: { $0.state == .unknown || $0.state == .rejected }) { break }
             }
 
             if cancellationRequested {
@@ -223,6 +239,9 @@ public actor SyncExecutor {
             } else if record.executions.contains(where: { $0.state == .unknown || $0.state == .failed }) {
                 record.summary.status = .partial
                 record.summary.message = "Hay cambios cuyo resultado requiere reconciliación. No se repetirán automáticamente."
+            } else if record.executions.contains(where: { $0.state == .rejected }) {
+                record.summary.status = .partial
+                record.summary.message = "El servicio rechazó cambios sin aplicarlos. Se conservaron los resultados verificados; revisá el error y confirmá un nuevo análisis."
             } else {
                 await emit(record, "Comprobando el resultado final…", progress)
                 let final = try await fetchAll(record.plan.snapshots, providers: providers)
@@ -312,7 +331,7 @@ public actor SyncExecutor {
             }
         }
     }
-    private func batchIndices(starting index: Int, in record: RunRecord) -> [Int] {
+    private func batchIndices(starting index: Int, in record: RunRecord, limit: Int) -> [Int] {
         let op = record.executions[index].operation
         guard [.saveTracks, .removeTracks, .saveAlbums, .removeAlbums].contains(op.kind) else { return [index] }
         var result: [Int] = [], itemCount = 0
@@ -321,7 +340,7 @@ public actor SyncExecutor {
             guard candidate.state == .pending, candidate.operation.service == op.service, candidate.operation.kind == op.kind,
                   candidate.before?.id == record.executions[index].before?.id else { break }
             let count = max(candidate.operation.tracks.count, candidate.operation.albums.count)
-            if !result.isEmpty && itemCount + count > 40 { break }
+            if !result.isEmpty && itemCount + count > limit { break }
             result.append(i); itemCount += count
         }
         return result

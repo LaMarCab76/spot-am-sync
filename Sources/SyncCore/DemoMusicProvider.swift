@@ -16,17 +16,17 @@ public actor DemoMusicProvider: MusicProvider {
     public func fetchLibrary() async throws -> LibrarySnapshot {
         var copy = snapshot; copy.id = UUID(); copy.fetchedAt = Date(); return copy
     }
-    public func searchTracks(matching track: Track) async throws -> [Track] {
+    public func searchTracks(matching track: Track) async throws -> CatalogSearchResult<Track> {
         var seen = Set<String>()
-        return catalogTracks.filter {
+        return .init(candidates: catalogTracks.filter {
             (($0.isrc != nil && $0.isrc == track.isrc) || $0.title.localizedCaseInsensitiveContains(track.title)) && seen.insert($0.id).inserted
-        }
+        })
     }
-    public func searchAlbums(matching album: Album) async throws -> [Album] {
+    public func searchAlbums(matching album: Album) async throws -> CatalogSearchResult<Album> {
         var seen = Set<String>()
-        return catalogAlbums.filter {
+        return .init(candidates: catalogAlbums.filter {
             (($0.upc != nil && $0.upc == album.upc) || $0.title.localizedCaseInsensitiveContains(album.title)) && seen.insert($0.id).inserted
-        }
+        })
     }
     public func perform(_ operation: SyncOperation) async throws -> MutationReceipt {
         guard operation.service == service, (await capabilities()).supported.contains(operation.kind) else { throw ProviderError.unsupported("Operación no disponible en este servicio.") }

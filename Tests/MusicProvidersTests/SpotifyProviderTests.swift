@@ -16,9 +16,10 @@ final class SpotifyProviderTests: XCTestCase {
         let t = ScriptedTransport([spotifyMe,
             .init("/v1/search", json: ["tracks": spPage([spTrack("a")], total: 2, next: "/v1/search?q=isrc%3Atest&type=track&limit=10&offset=1")], validate: {
                 XCTAssertEqual(query($0, "limit"), "10"); XCTAssertEqual(query($0, "q"), "isrc:test")
-            }), .init("/v1/search", json: ["tracks": spPage([spTrack("b")], offset: 1, total: 2)])])
+            }), .init("/v1/search", json: ["tracks": spPage([spTrack("b")], offset: 1, total: 2)]),
+            .init("/v1/search", json: ["tracks": spPage()])])
         let p = try await spotify(t), tracks = try await p.searchTracks(matching: Track(id: "source", title: "T", artist: "A", isrc: "test"))
-        XCTAssertEqual(tracks.map(\.id), ["a", "b"]); await t.assertExhausted()
+        XCTAssertEqual(tracks.candidates.map(\.id), ["a", "b"]); await t.assertExhausted()
     }
     func testRenameDoesNotEraseAnUnspecifiedDescription() async throws {
         let t = ScriptedTransport([spotifyMe, .init("PUT", "/v1/playlists/p", validate: {

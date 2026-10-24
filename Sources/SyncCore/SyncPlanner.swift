@@ -131,7 +131,8 @@ private struct PlanBuilder {
             }
         } else {
             let reverse = decisions.tracks.filter {
-                $0.sourceService == service.other && $0.selected?.playableID == source.playableID && $0.confidence != .unavailable
+                $0.sourceService == service.other && $0.selected?.playableID == source.playableID && $0.confidence != .unavailable &&
+                    ($0.searchCoverage == nil || $0.searchCoverage == .complete || $0.manualSelection == true)
             }
             if !reverse.isEmpty {
                 let targets = Set(reverse.map { $0.source.playableID })
@@ -145,7 +146,8 @@ private struct PlanBuilder {
             }
         }
         if let selected = result.selected {
-            if !selected.available || selected.isLocal || selected.playableID.isEmpty || result.confidence == .unavailable ||
+            if (result.searchCoverage != nil && result.searchCoverage != .complete && result.manualSelection != true) ||
+                !selected.available || selected.isLocal || selected.playableID.isEmpty || result.confidence == .unavailable ||
                 trackConflicts[service.other, default: []].contains(selected.id) || trackConflicts[service.other, default: []].contains(selected.playableID) {
                 result.selected = nil
                 result.reason = "La selección de destino no está disponible o su identidad es ambigua."
@@ -170,7 +172,8 @@ private struct PlanBuilder {
                 : AlbumMatch(sourceService: service, source: source, reason: "Las decisiones de álbum están en conflicto o desactualizadas.")
         } else {
             let reverse = decisions.albums.filter {
-                $0.sourceService == service.other && $0.selected?.playableID == source.playableID && $0.confidence != .unavailable
+                $0.sourceService == service.other && $0.selected?.playableID == source.playableID && $0.confidence != .unavailable &&
+                    ($0.searchCoverage == nil || $0.searchCoverage == .complete || $0.manualSelection == true)
             }
             if !reverse.isEmpty {
                 let compatible = reverse.allSatisfy {
@@ -184,7 +187,8 @@ private struct PlanBuilder {
             }
         }
         if let selected = result.selected {
-            if !source.isCompleteAlbum || !selected.isCompleteAlbum || !selected.available || selected.playableID.isEmpty ||
+            if (result.searchCoverage != nil && result.searchCoverage != .complete && result.manualSelection != true) ||
+                !source.isCompleteAlbum || !selected.isCompleteAlbum || !selected.available || selected.playableID.isEmpty ||
                 result.confidence == .unavailable || albumConflicts[service.other, default: []].contains(selected.id) ||
                 albumConflicts[service.other, default: []].contains(selected.playableID) {
                 result.selected = nil
