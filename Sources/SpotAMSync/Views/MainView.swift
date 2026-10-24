@@ -71,7 +71,7 @@ struct MainView: View {
             case .analyzing: destination = .overview
             case .review: if destination == .overview { destination = .review }
             case .connecting: destination = .connections
-            case .idle: break
+            case .idle, .searching: break
             }
         }
     }

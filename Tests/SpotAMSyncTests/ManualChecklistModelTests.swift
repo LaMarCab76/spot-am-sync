@@ -6,6 +6,63 @@ import SyncCore
 
 @MainActor
 final class ManualChecklistModelTests: XCTestCase {
+    func testManualAlternativePersistsWithoutMarkingOrClaimingXMLPresence() async throws {
+        try await withTemporaryStore { store, _ in
+            var library = self.library()
+            let source = self.spotify()
+            var alternative = source.savedTracks[0]
+            alternative.id = "xml:alternative"; alternative.albumTitle = "Recopilación"; alternative.isLocal = true
+            library.tracks = [alternative]
+            let report = ManualChecklistPlanner.make(source: source, library: library)
+            try await store.save(.init(library: library, report: report))
+            let model = try await self.hydratedModel(), item = try XCTUnwrap(model.report?.items.first)
+            XCTAssertNotEqual(item.evidence, .present)
+            model.choose(itemID: item.id, candidate: alternative)
+            try await self.waitUntil("guardar equivalencia") { !model.isBusy }
+            XCTAssertEqual(model.choices[item.id]?.selected, alternative)
+            XCTAssertEqual(model.choices[item.id]?.origin, .xml)
+            XCTAssertTrue(model.markedIDs.isEmpty)
+            XCTAssertNotEqual(model.report?.items.first?.evidence, .present)
+            let restored = try await self.hydratedModel()
+            XCTAssertEqual(restored.choices[item.id]?.selected, alternative)
+            restored.generate(isDemo: false) { self.spotify(accountID: "other-account") }
+            try await self.waitUntil("otra cuenta") { !restored.isBusy }
+            XCTAssertTrue(restored.choices.isEmpty)
+        }
+    }
+
+    func testDemoSearchAndChoicesNeverCallNetworkOrOverwriteRealState() async throws {
+        try await withTemporaryStore { store, url in
+            try await store.save(self.markedState())
+            let original = try Data(contentsOf: url), model = try await self.hydratedModel()
+            model.loadDemo()
+            try await self.waitUntil("demo") { !model.isBusy }
+            let item = try XCTUnwrap(model.report?.items.first)
+            model.searchCandidates(itemID: item.id, query: TrackSearchQuery(item.track), catalogSearch: { _, _ in
+                XCTFail("Demo must not query the supplied catalog"); return .init()
+            })
+            try await self.waitUntil("búsqueda demo") { !model.isBusy }
+            if let candidate = model.candidateResults[item.id]?.candidates.first { model.choose(itemID: item.id, candidate: candidate) }
+            XCTAssertEqual(try Data(contentsOf: url), original)
+        }
+    }
+
+    func testCancelledCandidateSearchDiscardsLateResults() async throws {
+        try await withTemporaryStore { store, _ in
+            let state = self.markedState(); try await store.save(state)
+            let model = try await self.hydratedModel(), item = try XCTUnwrap(model.report?.items.first)
+            let delayed = DeferredSnapshot(self.spotify())
+            model.searchCandidates(itemID: item.id, query: TrackSearchQuery(item.track), catalogSearch: { _, _ in
+                let snapshot = await delayed.fetch()
+                return .init(candidates: snapshot.savedTracks)
+            })
+            try await self.waitUntil("consulta iniciada") { delayed.hasStarted }
+            model.cancel(); delayed.release()
+            try await self.waitUntil("cancelación") { !model.isBusy }
+            XCTAssertNil(model.candidateResults[item.id]); XCTAssertNil(model.choices[item.id])
+        }
+    }
+
     func testGenerateAndMarkPersistAcrossModelInstances() async throws {
         try await withTemporaryStore { store, _ in
             let library = self.library()

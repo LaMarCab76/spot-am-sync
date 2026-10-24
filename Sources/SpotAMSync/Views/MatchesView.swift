@@ -101,17 +101,24 @@ private struct MatchCardHeader: View {
 private struct TrackMatchCard: View {
     @EnvironmentObject private var model: AppModel
     let match: TrackMatch
+    @ViewState private var reviewing = false
     var body: some View {
         SurfaceCard {
             VStack(alignment: .leading, spacing: 13) {
                 MatchCardHeader(title: match.source.title, artist: match.source.artist, service: match.sourceService, reason: match.reason, selected: match.selected != nil, confidence: match.confidence)
                 TrackMetadata(track: match.source)
+                if match.decision == .manual { Text("Elegida manualmente").font(.caption).foregroundStyle(SyncStyle.green) }
+                if match.decision == .omitted { Text("Omitida por vos").font(.caption).foregroundStyle(.secondary) }
+                if let coverage = match.searchCoverage, coverage != .complete {
+                    Text("Búsqueda incompleta: los resultados no prueban ausencia.").font(.caption).foregroundStyle(SyncStyle.coral)
+                }
+                Button("Buscar y comparar alternativas", systemImage: "magnifyingglass") { reviewing = true }.disabled(model.isBusy)
                 Divider()
                 if match.candidates.isEmpty {
                     Label("No se encontraron candidatos para elegir.", systemImage: "magnifyingglass").font(.callout).foregroundStyle(.secondary)
                 } else {
                     Text("Elegí la canción en \(match.sourceService.other.name)").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    ForEach(Array(match.candidates.enumerated()), id: \.offset) { _, candidate in
+                    ForEach(Array(match.candidates.prefix(5).enumerated()), id: \.offset) { _, candidate in
                         Button { model.selectTrack(matchID: match.id, targetID: candidate.id) } label: {
                             HStack(alignment: .top, spacing: 11) {
                                 Image(systemName: match.selected?.id == candidate.id ? "largecircle.fill.circle" : "circle")
@@ -132,6 +139,10 @@ private struct TrackMatchCard: View {
                             .accessibilityAddTraits(match.selected?.id == candidate.id ? .isSelected : [])
                     }
                 }
+                if match.candidates.count > 5 {
+                    Text("Hay \(match.candidates.count) opciones. Abrí el comparador para verlas y filtrarlas por artista o álbum.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 HStack {
                     Text(match.selected == nil ? "Sin selección: esta equivalencia queda pendiente." : "Equivalencia seleccionada para la vista previa.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -142,6 +153,18 @@ private struct TrackMatchCard: View {
                     }
                 }
             }
+        }
+        .sheet(isPresented: $reviewing) {
+            let current = model.decisions.tracks.first { $0.id == match.id } ?? match
+            TrackCandidateReview(source: current.source, service: current.sourceService.other, candidates: current.candidates,
+                                 selected: current.selected, notes: (current.searchNotes ?? []) + [current.reason], busy: model.isBusy,
+                                 search: { model.searchTrack(matchID: current.id, query: $0) },
+                                 choose: { model.selectTrack(matchID: current.id, targetID: $0.id) },
+                                 reject: { model.rejectTrack(matchID: current.id, candidateID: $0.id) },
+                                 pending: { model.selectTrack(matchID: current.id, targetID: nil) },
+                                 omit: { model.omitTrack(matchID: current.id) },
+                                 restore: { model.searchTrack(matchID: current.id, query: TrackSearchQuery(current.source), restoreRejected: true) },
+                                 cancel: { model.cancel() })
         }
     }
 }

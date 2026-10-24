@@ -467,9 +467,9 @@ private func uniqueAlbums(_ albums: [Album]) -> [Album] {
 }
 
 private func sameTrackMetadata(_ left: Track, _ right: Track) -> Bool {
-    var left = left, right = right
-    left.id = ""; right.id = ""; left.catalogID = nil; right.catalogID = nil
-    return left == right
+    left.title == right.title && left.artist == right.artist && left.albumTitle == right.albumTitle &&
+    left.durationMS == right.durationMS && left.isrc == right.isrc && left.explicit == right.explicit &&
+    left.available == right.available && left.isLocal == right.isLocal
 }
 
 private func sameAlbumMetadata(_ left: Album, _ right: Album) -> Bool {

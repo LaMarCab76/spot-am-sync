@@ -68,10 +68,33 @@ public struct ManualChecklistState: Codable, Sendable {
     public var library: ManualMusicLibrary?
     public var report: ManualChecklist?
     public var markedIDsByScope: [String: Set<String>]
+    public var choicesByScope: [String: [String: ManualTrackChoice]]?
 
     public init(library: ManualMusicLibrary? = nil, report: ManualChecklist? = nil,
                 markedIDsByScope: [String: Set<String>] = [:]) {
         self.library = library; self.report = report; self.markedIDsByScope = markedIDsByScope
+    }
+}
+
+public enum ManualCandidateOrigin: String, Codable, Sendable { case xml, catalog, itunes }
+public struct ManualTrackChoice: Codable, Sendable {
+    public var source: Track
+    public var selected: Track?
+    public var origin: ManualCandidateOrigin
+    public var decision: TrackDecision
+    public var rejectedIDs: [String]
+    public init(source: Track, selected: Track? = nil, origin: ManualCandidateOrigin = .xml, decision: TrackDecision = .pending, rejectedIDs: [String] = []) {
+        self.source = source; self.selected = selected; self.origin = origin; self.decision = decision; self.rejectedIDs = rejectedIDs
+    }
+    public func revalidated(source: Track, library: ManualMusicLibrary) -> ManualTrackChoice {
+        var copy = self
+        guard self.source == source else { return .init(source: source) }
+        if origin == .xml, let selected,
+           !library.tracks.contains(where: { $0.id == selected.id && CatalogMatcher.sameIdentityMetadata($0, selected) }) {
+            copy.selected = nil; copy.decision = .pending
+        }
+        // Catalog choices are remembered references, never proof of XML or cloud membership.
+        return copy
     }
 }
 

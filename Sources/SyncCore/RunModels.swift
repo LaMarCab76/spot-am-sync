@@ -28,7 +28,7 @@ public struct RunSummary: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
-public enum ExecutionState: String, Codable, Sendable { case pending, applying, verified, failed, unknown }
+public enum ExecutionState: String, Codable, Sendable { case pending, applying, verified, failed, unknown, rejected }
 
 public struct OperationExecution: Codable, Equatable, Sendable, Identifiable {
     public var id: UUID { operation.id }
@@ -37,6 +37,8 @@ public struct OperationExecution: Codable, Equatable, Sendable, Identifiable {
     public var before: LibrarySnapshot?
     public var receipt: MutationReceipt?
     public var error: String?
+    public var parentOperationID: UUID?
+    public var createdByOperationID: UUID?
     public init(operation: SyncOperation, state: ExecutionState = .pending, before: LibrarySnapshot? = nil, receipt: MutationReceipt? = nil, error: String? = nil) {
         self.operation = operation; self.state = state; self.before = before; self.receipt = receipt; self.error = error
     }

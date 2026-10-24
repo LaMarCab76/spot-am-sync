@@ -38,8 +38,9 @@ public actor SyncExecutor {
             let lhs = $0.element.kind.isDestructive ? 1 : 0, rhs = $1.element.kind.isDestructive ? 1 : 0
             return lhs == rhs ? $0.offset < $1.offset : lhs < rhs
         }.map(\.element)
-        let summary = RunSummary(totalCount: ordered.count, message: "Verificando el estado aprobado…")
-        let record = RunRecord(summary: summary, plan: plan, decisions: decisions, executions: ordered.map { OperationExecution(operation: $0) }, checkpoints: plan.snapshots, isDemo: isDemo)
+        let executions = MutationBatches.executions(ordered)
+        let summary = RunSummary(totalCount: executions.count, message: "Verificando el estado aprobado…")
+        let record = RunRecord(summary: summary, plan: plan, decisions: decisions, executions: executions, checkpoints: plan.snapshots, isDemo: isDemo)
         return try await run(record, providers: providers, resuming: false, progress: progress)
     }
 
@@ -119,11 +120,18 @@ public actor SyncExecutor {
 
             while let index = record.executions.firstIndex(where: { $0.state == .pending }) {
                 if cancellationRequested { break }
-                if record.executions.contains(where: { $0.state == .unknown || $0.state == .failed }) { break }
+                if record.executions.contains(where: { $0.state == .unknown || $0.state == .failed || $0.state == .rejected }) { break }
                 current = try await fetchAll(record.plan.snapshots, providers: providers)
                 try validate(current, against: record.checkpoints)
                 if cancellationRequested { break }
 
+                if let dependency = record.executions[index].createdByOperationID {
+                    guard let creation = record.executions.first(where: { $0.id == dependency }), creation.state == .verified,
+                          let target = creation.receipt?.createdID else {
+                        throw SyncExecutionError.unsafeResume("Falta verificar la creación de la playlist antes de agregar sus canciones.")
+                    }
+                    record.executions[index].operation.targetID = target
+                }
                 let operation = record.executions[index].operation
                 guard let provider = providers[operation.service], let before = current.first(where: { $0.account.service == operation.service }) else { throw SyncExecutionError.missingProvider }
                 let capabilities = await provider.capabilities()
@@ -188,6 +196,9 @@ public actor SyncExecutor {
                         if let createdID = verified.createdID, op.kind == .createPlaylist {
                             rememberCreatedPlaylist(operation: op, createdID: createdID, record: &record)
                         }
+                    } else if Self.definitelyRejected(mutationError), unsent.allSatisfy({ $0.before == nil }) {
+                        record.executions[i].state = .rejected
+                        rememberError(mutationError!.localizedDescription, at: i, record: &record)
                     } else {
                         // Never assume that an errored write was not applied.
                         record.executions[i].state = .unknown
@@ -210,7 +221,7 @@ public actor SyncExecutor {
                 record.summary.verifiedCount = record.executions.filter { $0.state == .verified }.count
                 try await store.save(record)
                 await emit(record, "\(record.summary.verifiedCount) de \(record.summary.totalCount) cambios verificados", progress)
-                if unexpectedChanges || record.executions.contains(where: { $0.state == .unknown }) { break }
+                if unexpectedChanges || record.executions.contains(where: { $0.state == .unknown || $0.state == .rejected }) { break }
             }
 
             if cancellationRequested {
@@ -220,6 +231,9 @@ public actor SyncExecutor {
             } else if unexpectedChanges {
                 record.summary.status = .partial
                 record.summary.message = "El servicio refleja cambios adicionales al plan. Se detuvo la ejecución para que puedas revisar un nuevo análisis."
+            } else if record.executions.contains(where: { $0.state == .rejected }) {
+                record.summary.status = .partial
+                record.summary.message = "El servicio rechazó un lote sin aplicarlo. Los lotes verificados se conservan. Corregí el permiso o la disponibilidad y confirmá un nuevo análisis para lo pendiente."
             } else if record.executions.contains(where: { $0.state == .unknown || $0.state == .failed }) {
                 record.summary.status = .partial
                 record.summary.message = "Hay cambios cuyo resultado requiere reconciliación. No se repetirán automáticamente."
@@ -255,6 +269,14 @@ public actor SyncExecutor {
     }
 
     private var cancellationRequested: Bool { cancelled || Task.isCancelled }
+
+    private static func definitelyRejected(_ error: Error?) -> Bool {
+        guard let error = error as? ProviderError else { return false }
+        switch error {
+        case .unauthorized, .forbidden, .rateLimited, .quotaExceeded, .unsupported, .notConnected: return true
+        default: return false
+        }
+    }
 
     private func requireApproval(_ record: inout RunRecord) async throws {
         if try await store.load(id: record.id)?.approvalRevoked == true { record.approvalRevoked = true }
@@ -315,13 +337,14 @@ public actor SyncExecutor {
     private func batchIndices(starting index: Int, in record: RunRecord) -> [Int] {
         let op = record.executions[index].operation
         guard [.saveTracks, .removeTracks, .saveAlbums, .removeAlbums].contains(op.kind) else { return [index] }
+        let maximum = op.service == .spotify ? 40 : 100
         var result: [Int] = [], itemCount = 0
         for i in index..<record.executions.count {
             let candidate = record.executions[i]
             guard candidate.state == .pending, candidate.operation.service == op.service, candidate.operation.kind == op.kind,
                   candidate.before?.id == record.executions[index].before?.id else { break }
             let count = max(candidate.operation.tracks.count, candidate.operation.albums.count)
-            if !result.isEmpty && itemCount + count > 40 { break }
+            if !result.isEmpty && itemCount + count > maximum { break }
             result.append(i); itemCount += count
         }
         return result
