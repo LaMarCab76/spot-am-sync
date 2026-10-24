@@ -1,0 +1,204 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  padding: 32px 32px 0;
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.greeting {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.title {
+  font-family: var(--font-display);
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+  gap: 12px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px;
+  border-radius: var(--r-card);
+  background: var(--card);
+  color: var(--text);
+}
+
+a.card:hover {
+  background: var(--raised);
+}
+
+.cardLabel {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+.bigNumber {
+  font-family: var(--font-display);
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.cardText {
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+
+.cardLink {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.stack {
+  display: flex;
+}
+
+.stack img + img {
+  margin-left: -8px;
+}
+
+.stack img {
+  box-shadow: 0 0 0 2px var(--card);
+}
+
+.accountRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sectionHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.sectionLink {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+.sectionLink:hover {
+  color: var(--text);
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 1fr));
+  gap: 20px;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tileArt {
+  position: relative;
+  display: block;
+  aspect-ratio: 1;
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.tileArt img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.3s ease;
+}
+
+.tile:hover .tileArt img {
+  transform: scale(1.03);
+}
+
+.tileChip {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tileName {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.activity {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.activityRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 60px;
+  padding: 8px 12px;
+  border-radius: 12px;
+}
+
+.activityRow:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.activityIcon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+}
+
+.activityText {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
