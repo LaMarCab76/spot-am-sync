@@ -20,6 +20,8 @@ public actor SpotifyProvider: MusicProvider {
     private var authorizationTask: Task<URL, Error>?
     private var refreshTask: Task<SpotifyCredential, Error>?
     private var trackCache: [String: Track] = [:]
+    private var searchCache: [TrackSearchQuery: (Date, TrackSearchResult)] = [:]
+    private var searchResumeAt = Date.distantPast
 
     public init(clientID: String) {
         self.clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -49,6 +51,7 @@ public actor SpotifyProvider: MusicProvider {
         guard !clientID.isEmpty else { throw ProviderError.unsupported("Ingresá el Client ID público de tu aplicación Spotify.") }
         generation = UUID(); let epoch = generation
         connected = nil; credential = nil; trackCache.removeAll()
+        searchCache.removeAll(); searchResumeAt = .distantPast
         do {
             if let stored = try credentialStore.load(clientID: clientID), SpotifyPKCE.scopes.isSubset(of: stored.scopes) {
                 credential = stored
@@ -144,6 +147,7 @@ public actor SpotifyProvider: MusicProvider {
         try begin(); defer { busy = false }
         let account = try account()
         trackCache.removeAll()
+        searchCache.removeAll()
         var coverage = InventoryCoverage(), playlists: [Playlist] = [], savedTracks: [Track] = [], albums: [Album] = []
         let playlistPage = try await pages("/v1/me/playlists?limit=50")
         coverage.playlists = playlistPage.complete; coverage.notes += playlistPage.notes.map { "Playlists: " + $0 }
@@ -209,6 +213,11 @@ public actor SpotifyProvider: MusicProvider {
             isrc: value["external_ids"]["isrc"].nonempty, explicit: value["explicit"].bool,
             available: valid && value["is_playable"].bool != false && value["restrictions"].isNull && value["is_local"].bool != true,
             isLocal: value["is_local"].bool == true)
+        result.url = value["external_urls"]["spotify"].nonempty
+        result.artistNames = value["artists"].array?.compactMap { $0["name"].nonempty }
+        result.albumID = value["album"]["id"].nonempty
+        result.releaseDate = value["album"]["release_date"].nonempty
+        result.discNumber = value["disc_number"].int; result.trackNumber = value["track_number"].int
         if enrich && result.isrc == nil && !result.isLocal {
             if let cached = trackCache[id] {
                 if cached.available {
@@ -246,6 +255,58 @@ public actor SpotifyProvider: MusicProvider {
         let complete = page.complete && value["total_tracks"].int == tracks.count && tracks.allSatisfy(\.available)
         return Album(id: id, catalogID: id, title: title, artist: artist(value), upc: value["external_ids"]["upc"].nonempty,
                      tracks: tracks, isCompleteAlbum: complete, available: value["name"].nonempty != nil && !artist(value).isEmpty)
+    }
+
+    public func catalogTrack(id: String) async throws -> Track? {
+        try begin(); defer { busy = false }; _ = try account()
+        let value = try await get(APIOrigin.spotify.url("/v1/tracks/\(resourceID(id))"))
+        guard value["id"].nonempty == id else { return nil }
+        return try await track(value, fallback: id)
+    }
+
+    public func searchCatalog(_ query: TrackSearchQuery) async throws -> TrackSearchResult {
+        try begin(); defer { busy = false }; _ = try account()
+        if searchResumeAt > Date() { throw ProviderError.rateLimited(seconds: Int(ceil(searchResumeAt.timeIntervalSinceNow))) }
+        if let cached = searchCache[query], Date().timeIntervalSince(cached.0) < 120 { return cached.1 }
+        // Strip query syntax from individual field values; URLComponents handles transport encoding.
+        func field(_ name: String, _ value: String) -> String? {
+            let text = value.replacingOccurrences(of: "\"", with: " ").replacingOccurrences(of: ":", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : "\(name):\"\(text)\""
+        }
+        var fields: [String?]
+        switch query.stage {
+        case .identifier: fields = [field("isrc", query.isrc ?? "")]
+        case .metadata: fields = [field("artist", query.artist), field("album", query.album), field("track", query.title)]
+        case .albumTracks: fields = [field("artist", query.artist), field("album", query.album)]
+        case .artistTitle: fields = [field("artist", query.artist), field("track", query.title)]
+        }
+        guard !fields.compactMap({ $0 }).isEmpty else { return .init() }
+        let albums = query.stage == .albumTracks
+        let url = try APIOrigin.spotify.url("/v1/search", query: [.init(name: "q", value: fields.compactMap { $0 }.joined(separator: " ")), .init(name: "type", value: albums ? "album" : "track"), .init(name: "limit", value: "10")])
+        let page = try await collectPages(origin: .spotify, path: url.absoluteString, spotify: true, envelope: albums ? "albums" : "tracks", maximumPages: 3) { try await self.get($0) }
+        var result = TrackSearchResult(coverage: page.complete ? .complete : .partial, notes: page.notes, stages: [query.stage])
+        var hadFailure = false
+        func observe(_ page: CollectedPage) {
+            if !page.complete { result.coverage = .partial; result.notes += page.notes }
+            if page.failure != nil { hadFailure = true }
+            if case .rateLimited(let seconds) = page.failure { result.retryAfterSeconds = seconds; searchResumeAt = Date().addingTimeInterval(Double(seconds)) }
+        }
+        observe(page)
+        if albums {
+            if page.items.count > 3 { result.coverage = .partial; result.notes.append("Se revisaron las primeras tres ediciones del álbum. Afiná el nombre para consultar otras.") }
+            for value in page.items.prefix(3) {
+                guard result.retryAfterSeconds == nil, let id = value["id"].nonempty else { break }
+                let tracks = try await collectPages(origin: .spotify, path: "/v1/albums/\(resourceID(id))/tracks?limit=50", spotify: true, maximumPages: 2) { try await self.get($0) }
+                observe(tracks)
+                for item in tracks.items { result.candidates.append(try await track(item, fallback: "album-search", albumTitle: value["name"].string ?? query.album, enrich: false)) }
+            }
+        } else {
+            for item in page.items { result.candidates.append(try await track(item, fallback: "search", enrich: false)) }
+        }
+        if result.candidates.contains(where: { !$0.available }) { result.coverage = .partial }
+        if result.candidates.isEmpty && hadFailure { result.coverage = .failed }
+        if result.coverage == .complete { searchCache[query] = (Date(), result) }
+        return result
     }
 
     public func searchTracks(matching track: Track) async throws -> [Track] {

@@ -18,6 +18,8 @@ public actor AppleMusicProvider: MusicProvider {
     private var busy = false
     private var songCache: [String: MappedTrack] = [:]
     private var catalogCache: [String: JSONValue] = [:]
+    private var searchCache: [TrackSearchQuery: (Date, TrackSearchResult)] = [:]
+    private var searchResumeAt = Date.distantPast
     private struct MappedTrack { var track: Track; var complete: Bool }
 
     public init() {
@@ -41,6 +43,7 @@ public actor AppleMusicProvider: MusicProvider {
         try begin(); defer { busy = false }
         generation = UUID(); let epoch = generation; connected = nil
         songCache.removeAll(); catalogCache.removeAll()
+        searchCache.removeAll(); searchResumeAt = .distantPast
         guard let session else {
             throw ProviderError.unsupported("El transporte de Apple Music debe vincular las solicitudes a una sesión autorizada.")
         }
@@ -154,10 +157,13 @@ public actor AppleMusicProvider: MusicProvider {
         let catalogID = catalog?["id"].nonempty
         let available = title != nil && artist != nil && duration != nil && catalogID != nil && c["playParams"].isObject
         let rating = c["contentRating"].string ?? a["contentRating"].string
-        let result = MappedTrack(track: Track(id: id, catalogID: catalogID, title: title ?? "Canción no disponible", artist: artist ?? "",
+        var result = MappedTrack(track: Track(id: id, catalogID: catalogID, title: title ?? "Canción no disponible", artist: artist ?? "",
             albumTitle: a["albumName"].string ?? c["albumName"].string ?? "", durationMS: duration ?? 0,
             isrc: c["isrc"].nonempty, explicit: rating.map { $0 == "explicit" }, available: available,
             isLocal: type == "library-songs" && catalogID == nil && complete), complete: complete && available)
+        result.track.url = c["url"].nonempty
+        result.track.releaseDate = c["releaseDate"].nonempty
+        result.track.discNumber = c["discNumber"].int; result.track.trackNumber = c["trackNumber"].int
         songCache["\(type):\(id)"] = result; return result
     }
     private func mappedTracks(_ page: CollectedPage, context: String) async throws -> (tracks: [Track], complete: Bool) {
@@ -173,6 +179,7 @@ public actor AppleMusicProvider: MusicProvider {
         try begin(); defer { busy = false }
         let account = try account()
         songCache.removeAll(); catalogCache.removeAll()
+        searchCache.removeAll()
         var coverage = InventoryCoverage(), playlists: [Playlist] = [], albums: [Album] = []
         let playlistsPage = try await pages("/v1/me/library/playlists?limit=100")
         coverage.playlists = playlistsPage.complete; coverage.notes += playlistsPage.notes.map { "Playlists: " + $0 }
@@ -239,18 +246,103 @@ public actor AppleMusicProvider: MusicProvider {
         return (result, libraryComplete && mappingComplete && catalogComplete && valid)
     }
 
-    public func searchTracks(matching track: Track) async throws -> [Track] {
+    public func catalogTrack(id: String) async throws -> Track? {
         try begin(); defer { busy = false }; _ = try account()
-        let path: URL
-        let envelope: String?
-        if let isrc = track.isrc, !isrc.isEmpty {
-            path = try APIOrigin.apple.url("/v1/catalog/\(storefront())/songs", query: [.init(name: "filter[isrc]", value: isrc), .init(name: "limit", value: "100")]); envelope = nil
-        } else {
-            path = try APIOrigin.apple.url("/v1/catalog/\(storefront())/search", query: [.init(name: "term", value: "\(track.title) \(track.artist)"), .init(name: "types", value: "songs"), .init(name: "limit", value: "25")]); envelope = "songs"
+        // Revalidate remembered selections, including availability in this storefront.
+        catalogCache.removeValue(forKey: "\(try storefront()):songs:\(id)")
+        songCache.removeValue(forKey: "songs:\(id)")
+        return try await mappedTrack(catalogResource(type: "songs", id: id), fallback: id).track
+    }
+
+    public func searchTracks(matching track: Track) async throws -> [Track] {
+        let result = try await searchCatalog(TrackSearchQuery(track, stage: track.isrc?.isEmpty == false ? .identifier : .artistTitle))
+        guard result.coverage == .complete else { throw ProviderError.invalidResponse("La búsqueda de canciones de Apple Music quedó incompleta.") }
+        return result.candidates
+    }
+
+    public func searchCatalog(_ query: TrackSearchQuery) async throws -> TrackSearchResult {
+        try begin(); defer { busy = false }; _ = try account()
+        if searchResumeAt > Date() { throw ProviderError.rateLimited(seconds: Int(ceil(searchResumeAt.timeIntervalSinceNow))) }
+        if let cached = searchCache[query], Date().timeIntervalSince(cached.0) < 120 { return cached.1 }
+        var result = TrackSearchResult(stages: [query.stage])
+        var hadFailure = false
+        func observe(_ page: CollectedPage) {
+            if !page.complete { result.coverage = .partial; result.notes += page.notes }
+            if page.failure != nil { hadFailure = true }
+            if case .rateLimited(let seconds) = page.failure { result.retryAfterSeconds = seconds; searchResumeAt = Date().addingTimeInterval(Double(seconds)) }
         }
-        let page = try await searchPages(path, envelope: envelope)
-        guard page.complete else { throw ProviderError.invalidResponse("La búsqueda de canciones de Apple Music quedó incompleta.") }
-        return try await mappedTracks(page, context: "search").tracks
+        if query.stage == .identifier {
+            guard let isrc = query.isrc, !isrc.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return result }
+            let url = try APIOrigin.apple.url("/v1/catalog/\(storefront())/songs", query: [.init(name: "filter[isrc]", value: isrc)])
+            let response: JSONValue
+            do { response = try await get(url) }
+            catch ProviderError.rateLimited(let seconds) {
+                searchResumeAt = Date().addingTimeInterval(Double(seconds))
+                throw ProviderError.rateLimited(seconds: seconds)
+            }
+            let page = try await collectPages(origin: .apple, path: url.absoluteString, initial: response, spotify: false, maximumPages: 3) { try await self.get($0) }
+            observe(page)
+            var resources = page.items
+            var ids = Set(resources.compactMap { $0["id"].nonempty })
+            // Apple lists all matching IDs in meta.filters even when data contains only a subset.
+            let references = response["meta"]["filters"]["isrc"][isrc].array ?? []
+            if references.count > 25 { result.coverage = .partial; result.notes.append("El ISRC tiene más de 25 referencias; afiná la búsqueda por álbum.") }
+            for reference in references.prefix(25) {
+                if result.retryAfterSeconds != nil { break }
+                guard reference["type"].string == "songs", let id = reference["id"].nonempty else { result.coverage = .partial; continue }
+                if ids.insert(id).inserted {
+                    do { resources.append(try await catalogResource(type: "songs", id: id)) }
+                    catch is CancellationError { throw CancellationError() }
+                    catch ProviderError.unauthorized { throw ProviderError.unauthorized }
+                    catch ProviderError.notConnected { throw ProviderError.notConnected }
+                    catch {
+                        hadFailure = true; result.coverage = .partial
+                        result.notes.append("No se pudo consultar una referencia del ISRC: \(error.localizedDescription)")
+                        if case ProviderError.rateLimited(let seconds) = error {
+                            result.retryAfterSeconds = seconds; searchResumeAt = Date().addingTimeInterval(Double(seconds))
+                        }
+                    }
+                }
+            }
+            let mapped = try await mappedTracks(.init(items: resources), context: "isrc-search")
+            result.candidates = mapped.tracks
+            if !mapped.complete { result.coverage = .partial }
+        } else {
+            let albums = query.stage == .albumTracks
+            let terms: [String]
+            switch query.stage {
+            case .metadata: terms = [query.artist, query.album, query.title]
+            case .albumTracks: terms = [query.artist, query.album]
+            default: terms = [query.artist, query.title]
+            }
+            let type = albums ? "albums" : "songs"
+            let url = try APIOrigin.apple.url("/v1/catalog/\(storefront())/search", query: [.init(name: "term", value: terms.filter { !$0.isEmpty }.joined(separator: " ")), .init(name: "types", value: type), .init(name: "limit", value: "25")])
+            let page = try await collectPages(origin: .apple, path: url.absoluteString, spotify: false, maximumPages: 3) { next in
+                try await self.get(next)["results"][type]
+            }
+            observe(page)
+            if albums {
+                if page.items.count > 3 { result.coverage = .partial; result.notes.append("Se revisaron las primeras tres ediciones. Afiná el álbum para consultar otras.") }
+                for album in page.items.prefix(3) {
+                    guard result.retryAfterSeconds == nil, let id = album["id"].nonempty else { break }
+                    let included = album["relationships"]["tracks"]
+                    let tracks = try await collectPages(origin: .apple, path: "/v1/catalog/\(storefront())/albums/\(resourceID(id))/tracks", initial: included["data"].array == nil ? nil : included, spotify: false, maximumPages: 2) { try await self.get($0) }
+                    observe(tracks)
+                    var songs = tracks
+                    songs.items.removeAll { $0["type"].string == "music-videos" }
+                    let mapped = try await mappedTracks(songs, context: "album-search")
+                    result.candidates += mapped.tracks
+                    if !mapped.complete { result.coverage = .partial }
+                }
+            } else {
+                let mapped = try await mappedTracks(page, context: "search")
+                result.candidates = mapped.tracks
+                if !mapped.complete { result.coverage = .partial }
+            }
+        }
+        if result.candidates.isEmpty && hadFailure { result.coverage = .failed }
+        if result.coverage == .complete { searchCache[query] = (Date(), result) }
+        return result
     }
     private func searchPages(_ url: URL, envelope: String?) async throws -> CollectedPage {
         try await collectPages(origin: .apple, path: url.absoluteString, spotify: false) { next in

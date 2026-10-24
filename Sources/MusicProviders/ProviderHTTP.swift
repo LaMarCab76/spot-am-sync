@@ -167,12 +167,13 @@ struct CollectedPage: Sendable {
     var items: [JSONValue] = []
     var complete = true
     var notes: [String] = []
+    var failure: ProviderError?
 }
 
 /// Collects every page, preserves already-read data on failure, and distinguishes
 /// a genuine empty collection from a forbidden/malformed/truncated collection.
 func collectPages(origin: APIOrigin, path: String, initial: JSONValue? = nil,
-                  spotify: Bool, envelope: String? = nil,
+                  spotify: Bool, envelope: String? = nil, maximumPages: Int = 10_000,
                   fetch: (URL) async throws -> JSONValue) async throws -> CollectedPage {
     var output = CollectedPage(), next: String? = path, first = initial
     var visited = Set<String>(), expected: Int?
@@ -180,6 +181,10 @@ func collectPages(origin: APIOrigin, path: String, initial: JSONValue? = nil,
         let expectedPath = try origin.url(path).path
         while let current = next {
             try Task.checkCancellation()
+            if visited.count >= maximumPages {
+                output.complete = false; output.notes.append("Se alcanzó el límite de páginas de esta búsqueda. Afiná los términos para consultar más opciones.")
+                break
+            }
             let url = try origin.url(current)
             guard url.path == expectedPath, visited.insert(url.absoluteString).inserted, visited.count <= 10_000 else {
                 throw ProviderError.invalidResponse("La paginación cambió de recurso, se repite o supera el límite de seguridad.")
@@ -211,6 +216,7 @@ func collectPages(origin: APIOrigin, path: String, initial: JSONValue? = nil,
     catch ProviderError.notConnected { throw ProviderError.notConnected }
     catch {
         output.complete = false
+        output.failure = error as? ProviderError
         output.notes.append((error as? ProviderError)?.errorDescription ?? "Lectura incompleta.")
     }
     return output

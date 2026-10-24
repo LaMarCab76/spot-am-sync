@@ -41,14 +41,24 @@ La sección **Agregar a Apple Music** compara las canciones de Spotify con una e
 1. En Música del Mac, elegí **Archivo → Biblioteca → Exportar biblioteca…** y guardá el XML.
 2. En SpotAM Sync, abrí **Agregar a Apple Music** e importá ese archivo.
 3. Conectá Spotify desde **Conexiones** y generá la lista. Se incluyen canciones de playlists, canciones guardadas y pistas de álbumes guardados, sin repetir una fila por cada aparición en una playlist.
-4. Usá **Buscar en Apple Music** para localizar cada canción, agregala desde Música y marcala en la lista. Podés desmarcarla si necesitás revisarla otra vez.
+4. Usá **Elegir equivalente** para comparar opciones por artista, álbum y canción. Podés elegir una referencia, descartarla, dejarla pendiente u omitirla. Abrila con **Buscar en Apple Music**, agregala desde Música y marcala en la lista. Podés desmarcarla si necesitás revisarla otra vez.
 5. Para comprobar incorporaciones, exportá de nuevo la biblioteca de Música, importá el XML actualizado y volvé a comparar.
 
 Los filtros separan pendientes, coincidencias para revisar, marcas manuales y canciones presentes en la exportación. Las marcas y la última lista se guardan localmente para continuar después de cerrar la app; quedan separadas por cuenta de Spotify y biblioteca de Música. El ejemplo de esta pantalla usa datos ficticios y no reemplaza la lista real guardada.
 
 **Una marca sólo registra tu avance:** no agrega canciones ni confirma cambios en Apple Music. “Presente” significa que se encontró una coincidencia compatible en el XML importado. La app muestra las fechas de los inventarios; una exportación anterior puede no reflejar cambios recientes ni todo el estado cloud. Las versiones ambiguas, los metadatos insuficientes y las lecturas parciales quedan para revisión. Los identificadores locales del XML nunca se convierten en identificadores del catálogo.
 
-El XML se procesa en el Mac. La búsqueda se abre únicamente cuando pulsás el botón de una canción. No se habilitan eliminaciones ni otras escrituras en Música dentro de este flujo.
+El XML se procesa en el Mac. Las consultas online se hacen al pulsar **Buscar opciones** o **Ver canciones del álbum**: envían los términos de artista, álbum y canción, sin subir el XML. Si Apple Music está conectado, se consulta su catálogo oficial; en caso contrario se usa la búsqueda pública de iTunes y el país indicado en el comparador. Los resultados públicos son referencias sin validar: no prueban presencia en tu biblioteca ni se usan para ejecutar una sincronización. Elegir una alternativa tampoco marca la canción como agregada. La demo busca solamente en sus datos locales. No se habilitan eliminaciones ni otras escrituras en Música dentro de este flujo.
+
+## Buscar y elegir equivalencias
+
+En **Coincidencias → Buscar y comparar alternativas**, el flujo oficial prueba ISRC y, si no encuentra una edición inequívoca, amplía por artista, álbum y canción, pistas de álbumes y finalmente artista con canción. Apple puede devolver varios recursos para un ISRC: se recuperan las referencias adicionales antes de evaluar la edición.
+
+El comparador permite editar los términos, listar canciones de un álbum, filtrar los resultados por artista o álbum, abrirlos en el servicio y elegir, descartar, dejar pendiente u omitir. Muestra duración, contenido explícito y diferencias de versión. **Una grabación de otro álbum, recopilación o edición siempre requiere tu elección**, aunque comparta ISRC. Metadatos desconocidos, versiones diferentes y ambigüedades tampoco se aceptan automáticamente.
+
+Las búsquedas están acotadas: hasta tres páginas por consulta, tres álbumes con dos páginas de pistas cada uno y 200 candidatos mostrados en la búsqueda oficial. Las referencias Apple de un ISRC se acotan a 25. Llegar a un límite, recibir datos incompletos o fallar una consulta deja la cobertura incompleta; no equivale a ausencia. Los límites de frecuencia detienen nuevas consultas durante el plazo indicado por el proveedor. La búsqueda pública de iTunes se espacia y siempre se informa como no exhaustiva porque no ofrece paginación documentada.
+
+Las decisiones oficiales se guardan por cuentas y storefront y se revalidan en el próximo análisis; las elecciones del checklist quedan separadas por cuenta de Spotify y biblioteca XML. Una elección online del checklist es sólo una referencia; la presencia se verifica mediante una nueva exportación. Cambiar una correspondencia recalcula la vista previa y revoca la aprobación anterior. La elección por sí sola no escribe en los servicios.
 
 ## Conectar Apple Music mediante la integración oficial
 
@@ -103,6 +113,8 @@ La automatización de Música en macOS requiere validación adicional de identid
 5. Relee el servicio para comprobar el resultado, incluyendo orden y repeticiones.
 6. Un timeout de escritura se considera incierto hasta reconciliarlo. No se repite ciegamente.
 7. Cambios externos y efectos adicionales del servicio detienen la ejecución para un nuevo análisis.
+
+Las operaciones grandes se dividen en pasos durables antes de enviarlas: una creación conserva su ID y las adiciones posteriores dependen de esa creación verificada. Si un lote se verifica y el siguiente falla, el primero no se vuelve a enviar. Un rechazo inequívoco del proveedor queda separado de un resultado incierto; permite preparar otra vista previa sin bloquearla como si hubiera una escritura desconocida. Los timeouts y errores ambiguos siguen requiriendo reconciliación. Los registros antiguos inciertos conservan esa protección.
 
 **Cancelar** detiene nuevas operaciones y reconcilia la que estaba en curso. **Comprobar pendientes** sólo lee el servicio para resolver resultados inciertos, incluso después de reiniciar y reconectar cuando puede verificarse la misma identidad. Para enviar nuevas operaciones hay que analizar y confirmar una nueva vista previa. Cambiar el modo, las protecciones o las correspondencias revoca las aprobaciones anteriores.
 

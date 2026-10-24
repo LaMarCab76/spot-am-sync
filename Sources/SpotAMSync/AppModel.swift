@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 import SyncCore
 import MusicProviders
 
-enum AppPhase { case idle, connecting, analyzing, review, syncing, finished }
+enum AppPhase { case idle, connecting, analyzing, searching, review, syncing, finished }
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -31,7 +31,7 @@ final class AppModel: ObservableObject {
     let manualChecklist = ManualChecklistModel()
     private var manualChanges: AnyCancellable?
 
-    var isBusy: Bool { [.connecting, .analyzing, .syncing].contains(phase) || manualChecklist.isBusy }
+    var isBusy: Bool { [.connecting, .analyzing, .searching, .syncing].contains(phase) || manualChecklist.isBusy }
     var displayedStatusText: String { manualChecklist.isBusy && phase == .idle ? manualChecklist.statusText : statusText }
     var canGenerateManualChecklist: Bool { accounts[.spotify] != nil && !isDemo && !isBusy && manualChecklist.library != nil }
     var canAnalyze: Bool { accounts.count == 2 && !isBusy }
@@ -42,6 +42,7 @@ final class AppModel: ObservableObject {
     private var executor: SyncExecutor?
     private var workTask: Task<Void, Never>?
     private var approvalUpdateTask: Task<Void, Error>?
+    private var decisionSaveTask: Task<Void, Never>?
     private var executionStartCancelled = false
     private var lastRecord: RunRecord?
     private var resumeRecord: RunRecord?
@@ -168,6 +169,7 @@ final class AppModel: ObservableObject {
                     capabilities[service] = await provider.capabilities()
                 }
                 snapshots = fresh
+                await decisionSaveTask?.value
                 if !isDemo, let stored = try await store?.loadDecisions(accountPair: accountPair(fresh)) { decisions = stored }
                 // Compare both directions so changing the base also exposes the other side's missing music.
                 let sources = fresh
@@ -179,24 +181,8 @@ final class AppModel: ObservableObject {
                     for track in source.allTracks {
                         try Task.checkCancellation()
                         statusText = "Buscando coincidencias: \(track.title)"
-                        var candidates = destination.allTracks
-                        var match = CatalogMatcher.track(track, candidates: candidates, sourceService: source.account.service)
                         let previous = decisions.tracks.first { $0.sourceService == source.account.service && $0.source.id == track.id }
-                        if match.confidence != .exact {
-                            var searchFailure: String?
-                            do { candidates += try await provider.searchTracks(matching: track) }
-                            catch {
-                                logs.append("\(track.title): \(error.localizedDescription)")
-                                searchFailure = error.localizedDescription
-                            }
-                            match = CatalogMatcher.track(track, candidates: uniqueTracks(candidates), sourceService: source.account.service)
-                            if let searchFailure { match.reason += " Búsqueda incompleta: \(searchFailure)" }
-                        }
-                        let rememberedCandidates = previous?.selected.map { selected in uniqueTracks(candidates).filter { $0.playableID == selected.playableID } } ?? []
-                        if previous?.source == track, let selected = previous?.selected,
-                           rememberedCandidates.count == 1, let found = rememberedCandidates.first, found == selected, found.available {
-                            match.selected = found; match.confidence = .exact; match.reason = "Correspondencia confirmada anteriormente para estas cuentas."
-                        }
+                        let match = try await findMatch(track, sourceService: source.account.service, local: destination.allTracks, provider: provider, previous: previous)
                         trackMatches.append(match); processed += 1
                         progress = total == 0 ? 1 : Double(processed) / Double(total)
                     }
@@ -295,9 +281,85 @@ final class AppModel: ObservableObject {
     func selectTrack(matchID: String, targetID: String?) {
         guard !isBusy, let i = decisions.tracks.firstIndex(where: { $0.id == matchID }) else { return }
         decisions.tracks[i].selected = decisions.tracks[i].candidates.first { $0.id == targetID }
-        decisions.tracks[i].confidence = decisions.tracks[i].selected == nil ? .review : .exact
-        decisions.tracks[i].reason = "Selección manual."
+        decisions.tracks[i].confidence = .review
+        decisions.tracks[i].decision = targetID == nil ? .pending : .manual
+        decisions.tracks[i].reason = targetID == nil ? "Pendiente por decisión tuya." : "Equivalencia elegida manualmente."
         rebuildPlan(); persistDecisions()
+    }
+
+    func omitTrack(matchID: String) {
+        guard !isBusy, let i = decisions.tracks.firstIndex(where: { $0.id == matchID }) else { return }
+        decisions.tracks[i].selected = nil; decisions.tracks[i].decision = .omitted
+        decisions.tracks[i].confidence = .review; decisions.tracks[i].reason = "Omitida por vos; no autoriza bajas."
+        rebuildPlan(); persistDecisions()
+    }
+
+    func rejectTrack(matchID: String, candidateID: String) {
+        guard !isBusy, let i = decisions.tracks.firstIndex(where: { $0.id == matchID }),
+              let candidate = decisions.tracks[i].candidates.first(where: { $0.id == candidateID }) else { return }
+        decisions.tracks[i].rejectedCandidateIDs = Array(Set((decisions.tracks[i].rejectedCandidateIDs ?? []) + [candidate.playableID])).sorted()
+        decisions.tracks[i].candidates.removeAll { $0.playableID == candidate.playableID }
+        if decisions.tracks[i].selected?.playableID == candidate.playableID { decisions.tracks[i].selected = nil }
+        decisions.tracks[i].decision = decisions.tracks[i].selected == nil ? .pending : .manual
+        decisions.tracks[i].confidence = .review
+        rebuildPlan(); persistDecisions()
+    }
+
+    func searchTrack(matchID: String, query: TrackSearchQuery, restoreRejected: Bool = false) {
+        guard !isBusy, query.valid, let original = decisions.tracks.first(where: { $0.id == matchID }),
+              let provider = providers[original.sourceService.other] else { return }
+        let context = accountPair(snapshots)
+        phase = .searching; statusText = "Buscando alternativas para \(original.source.title)…"
+        revokePreviousApprovals(); selectedOperationIDs = []
+        workTask = Task {
+            defer { phase = .review }
+            do {
+                let result = try await CatalogSearch.search(source: original.source, provider: provider, query: query)
+                try Task.checkCancellation()
+                guard context == accountPair(snapshots), let i = decisions.tracks.firstIndex(where: { $0.id == matchID && $0.source == original.source }) else { return }
+                var previous = original
+                if restoreRejected { previous.rejectedCandidateIDs = [] }
+                var match = CatalogSearch.match(source: original.source, sourceService: original.sourceService, result: result, previous: previous)
+                // An edited query proposes alternatives; choosing one is always explicit.
+                if match.decision != .manual {
+                    match.selected = nil; match.confidence = .review; match.decision = .pending
+                    match.reason = "Alternativas disponibles para tu elección. La búsqueda no selecciona una versión por vos."
+                }
+                decisions.tracks[i] = match
+                phase = .review; rebuildPlan(); persistDecisions()
+                statusText = "Alternativas actualizadas. Elegí la grabación y edición que correspondan."
+            } catch is CancellationError { statusText = "Búsqueda cancelada; se conservaron las decisiones anteriores." }
+            catch { errorMessage = error.localizedDescription; statusText = "No se completó la búsqueda. Podés reintentar." }
+        }
+    }
+
+    private func findMatch(_ source: Track, sourceService: MusicService, local: [Track], provider: any MusicProvider, previous: TrackMatch?) async throws -> TrackMatch {
+        let localMatch = CatalogMatcher.track(source, candidates: local, sourceService: sourceService)
+        var result = TrackSearchResult(candidates: localMatch.candidates)
+        if previous?.decision == .manual, let selected = previous?.selected,
+           !local.contains(where: { CatalogMatcher.sameIdentityMetadata($0, selected) }) {
+            do { if let fresh = try await provider.catalogTrack(id: selected.playableID) { result.candidates.append(fresh) } }
+            catch is CancellationError { throw CancellationError() }
+            catch { result.notes.append("La elección anterior necesita revalidación: \(error.localizedDescription)") }
+        }
+        if localMatch.selected == nil {
+            do {
+                let online = try await CatalogSearch.search(source: source, provider: provider)
+                result.candidates = CatalogMatcher.ranked(source, candidates: result.candidates + online.candidates)
+                result.coverage = online.coverage; result.notes += online.notes; result.stages = online.stages
+            } catch is CancellationError { throw CancellationError() }
+            catch { result.coverage = .failed; result.notes.append(error.localizedDescription) }
+        }
+        return CatalogSearch.match(source: source, sourceService: sourceService, result: result, previous: previous)
+    }
+
+    func searchManualTrack(itemID: String, query: TrackSearchQuery) {
+        guard !isBusy else { return }
+        if let provider = providers[.appleMusic] {
+            manualChecklist.searchCandidates(itemID: itemID, query: query, catalogSearch: { @Sendable source, query in
+                try await CatalogSearch.search(source: source, provider: provider, query: query)
+            })
+        } else { manualChecklist.searchCandidates(itemID: itemID, query: query) }
     }
     func selectAlbum(matchID: String, targetID: String?) {
         guard !isBusy, let i = decisions.albums.firstIndex(where: { $0.id == matchID }) else { return }
@@ -393,7 +455,12 @@ final class AppModel: ObservableObject {
     private func persistDecisions() {
         guard !isDemo, snapshots.count == 2, let store else { return }
         let value = decisions, key = accountPair(snapshots)
-        Task { do { try await store.saveDecisions(value, accountPair: key) } catch { errorMessage = error.localizedDescription } }
+        let previous = decisionSaveTask
+        decisionSaveTask = Task {
+            await previous?.value
+            do { try await store.saveDecisions(value, accountPair: key) }
+            catch { errorMessage = error.localizedDescription }
+        }
     }
     private func uniqueTracks(_ tracks: [Track]) -> [Track] {
         var seen = Set<Track>(); return tracks.filter { seen.insert($0).inserted }

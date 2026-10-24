@@ -31,6 +31,12 @@ public struct Track: Codable, Hashable, Sendable, Identifiable {
     public var explicit: Bool?
     public var available: Bool
     public var isLocal: Bool
+    public var url: String?
+    public var artistNames: [String]?
+    public var albumID: String?
+    public var releaseDate: String?
+    public var discNumber: Int?
+    public var trackNumber: Int?
     public init(id: String, catalogID: String? = nil, title: String, artist: String, albumTitle: String = "", durationMS: Int = 0, isrc: String? = nil, explicit: Bool? = nil, available: Bool = true, isLocal: Bool = false) {
         self.id = id; self.catalogID = catalogID; self.title = title; self.artist = artist
         self.albumTitle = albumTitle; self.durationMS = durationMS; self.isrc = isrc
@@ -182,6 +188,11 @@ public struct TrackMatch: Codable, Equatable, Sendable, Identifiable {
     public var selected: Track?
     public var confidence: MatchConfidence
     public var reason: String
+    public var decision: TrackDecision?
+    public var searchCoverage: SearchCoverage?
+    public var searchNotes: [String]?
+    public var searchStages: [SearchStage]?
+    public var rejectedCandidateIDs: [String]?
     public var id: String { "\(sourceService.rawValue):\(source.id)" }
     public init(sourceService: MusicService, source: Track, candidates: [Track] = [], selected: Track? = nil, confidence: MatchConfidence = .review, reason: String = "") {
         self.sourceService = sourceService; self.source = source; self.candidates = candidates
@@ -266,6 +277,8 @@ public protocol MusicProvider: Sendable {
     func capabilities() async -> ProviderCapabilities
     func fetchLibrary() async throws -> LibrarySnapshot
     func searchTracks(matching track: Track) async throws -> [Track]
+    func searchCatalog(_ query: TrackSearchQuery) async throws -> TrackSearchResult
+    func catalogTrack(id: String) async throws -> Track?
     func searchAlbums(matching album: Album) async throws -> [Album]
     func perform(_ operation: SyncOperation) async throws -> MutationReceipt
 }

@@ -101,7 +101,10 @@ final class ExecutorRecoveryTests: XCTestCase {
             let recovered = try await executor.resume(id: first.id, providers: providers)
             XCTAssertEqual(recovered.executions[0].state, .verified)
             XCTAssertEqual(recovered.summary.verifiedCount, 1)
-            let writes = await apple.writes(); XCTAssertEqual(writes.count, 1)
+            let writes = await apple.writes()
+            XCTAssertEqual(writes.filter { $0.kind == .createPlaylist }.count, 1)
+            XCTAssertEqual(writes.filter { $0.kind == .addPlaylistTracks }.count, 1)
+            XCTAssertEqual(recovered.executions[1].state, .unknown, "The separate append is still eventually consistent")
             let persisted = try await store.load(id: first.id)
             XCTAssertEqual(persisted?.executions[0].state, .verified)
         }
