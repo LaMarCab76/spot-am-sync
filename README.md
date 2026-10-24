@@ -1,71 +1,161 @@
-# Spot·AM Sync
+# SpotAM Sync
 
-App de escritorio (Electron) para sincronizar playlists entre Spotify y Apple Music.
-La interfaz sigue el diseño "Liquid": contenido plano sobre negro, color solo en las
-portadas, y vidrio translúcido únicamente en los controles que flotan encima
-(barra de sincronización, navegación sobre la portada, hojas).
+Aplicación nativa para macOS que compara bibliotecas de Spotify y Apple Music, prepara cambios revisables y ejecuta las operaciones compatibles con respaldo y comprobación posterior.
 
-> Estado: la interfaz completa funciona con datos de ejemplo. Todavía no se conecta
-> a las APIs de Spotify ni de Apple Music (ver [Próximos pasos](#próximos-pasos)).
+Requiere macOS 14 o posterior. La interfaz está en español. Los datos de análisis y el historial permanecen en el Mac.
 
-## Pantallas
+## Empezar
 
-| Ruta | Pantalla | Qué hace |
-|---|---|---|
-| `#/conectar` | Conectar cuentas | Primer uso: Spotify conectado, conectar Apple Music y continuar. |
-| `#/inicio` | Inicio | Resumen: canciones para revisar, próxima sync automática, cuentas, playlists con cambios y actividad. |
-| `#/playlist/:id` | Playlist | Cabecera con la portada, dirección de la sync, sync automática, filtros por estado y lista de canciones. |
-| `#/nueva` | Nueva sincronización | Asistente en 3 pasos: dirección, playlists y opciones. |
-| `#/revisar` | Revisar coincidencias | Cola de canciones dudosas o no encontradas; elegir versión, omitir o buscar. Atajos: ↑ ↓, ↵ y S. |
-| `#/historial` | Historial | Cada sincronización con su detalle, reintentar las fallidas y deshacer. |
-| `#/ajustes` | Ajustes | Cuentas, sincronización, coincidencias, notificaciones y datos. |
+Con Xcode instalado:
 
-## Desarrollo
-
-Requiere Node 20.19+ o 22.12+.
-
-```bash
-npm install        # instala Electron, Vite, React y TypeScript
-npm run dev        # abre la app con recarga en caliente
-npm run typecheck  # revisa tipos de main, preload y renderer
-npm test           # tests del estado (Vitest)
-npm run build      # compila a out/
-npm start          # abre la versión compilada
-npm run dist       # genera el instalador del sistema actual (dist/)
+```sh
+bash scripts/test.sh
+bash scripts/build-app.sh
+open "build/SpotAM Sync.app"
 ```
 
-`.npmrc` activa `legacy-peer-deps`: npm 10 falla al resolver las dependencias
-opcionales de Vitest y así `npm install` y `npm ci` quedan alineados con el lockfile.
+El script elige `/Applications/Xcode.app/Contents/Developer` sólo para ese proceso, sin cambiar `xcode-select`. También acepta `DEVELOPER_DIR` si Xcode está en otro lugar.
+
+La app incluye **Probar demostración**, con dos bibliotecas ficticias y proveedores en memoria. Permite revisar coincidencias, confirmar cambios, ver progreso e inspeccionar el historial sin acceder a cuentas reales. Los resultados de demostración están identificados como tales.
+
+```sh
+open "build/SpotAM Sync.app" --args --demo
+```
+
+## App unificada en Swift
+
+La implementación activa es Swift/SwiftUI. Conserva el motor nativo y los flujos de revisión, e incorpora la navegación Liquid, Inicio, detalle de playlist, asistente de tres pasos, cola, programación y Ajustes. No requiere Node, Electron ni un servidor web.
+
+- **Nueva sincronización:** guarda cuentas, región, playlists elegidas, destino confirmado, dirección y opciones. Las canciones y álbumes guardados quedan fuera del alcance por playlist; se revisan por separado en **Bibliotecas**.
+- **Orden y repeticiones:** se conservan por defecto. Omitir repeticiones es una opción explícita. Desactivar orden conserva la secuencia de las ocurrencias existentes que sigan en la propuesta y agrega las faltantes.
+- **Copia independiente:** la primera ejecución crea una copia y conserva su ID verificado. Las propuestas siguientes actualizan esa copia; si desaparece, requieren revisión antes de crear otra.
+- **Cola y programación:** la cola se guarda en SQLite. Las revisiones por hora, día o semana leen los servicios y preparan propuestas. **Nunca aplican cambios sin confirmación.** Las conexiones, el inventario y la configuración se revalidan antes de escribir.
+- **Ventanas y horarios:** cerrar la ventana mantiene la app ejecutándose. Salir con ⌘Q detiene el proceso. Los horarios vencidos se comprueban al iniciar o despertar el Mac, sin repetir todos los intervalos perdidos; no se instala un agente de inicio ni se promete trabajo con la app terminada.
+- **Historial:** muestra cada paso y su evidencia, exporta CSV/JSON y permite comprobar resultados inciertos o preparar una nueva propuesta. Deshacer prepara operaciones inversas, solo cuando el estado sigue siendo compatible y el proveedor lo admite. Requiere otra confirmación.
+- **Datos:** la migración de SQLite conserva el journal y crea un respaldo consistente antes de cambiar el esquema. Borrar historial resuelto conserva escrituras inciertas. El modo demo mantiene sus configuraciones y cola separadas de las reales.
+
+Los materiales de SwiftUI se adaptan a macOS 14 o posterior. Las portadas se obtienen de los proveedores; cuando no hay una portada se muestra un marcador local, sin fotos de ejemplo en cuentas reales.
+
+Ver [contratos de la unificación](docs/SWIFT_UNIFICATION.md) y [validación de esta versión](docs/UNIFICATION_VALIDATION.md).
+
+## Conectar Spotify
+
+1. Registrá una app en el [panel de Spotify](https://developer.spotify.com/dashboard).
+2. Registrá exactamente este redirect URI: `http://127.0.0.1:43821/callback`.
+3. Agregá los usuarios autorizados en la configuración de esa app.
+4. En **Conexiones**, ingresá su Client ID público y elegí **Conectar Spotify**.
+5. Autorizá el acceso en el navegador del sistema.
+
+Se usa Authorization Code con PKCE y verificación de `state`. No se solicita client secret ni contraseña. Los tokens se guardan en Keychain. Desconectar elimina el permiso almacenado por esta app; la revocación global puede hacerse desde Spotify.
+
+Las apps nuevas en Development Mode admiten hasta cinco usuarios autorizados y necesitan que su propietario tenga Spotify Premium. El acceso a playlists ajenas puede estar restringido. Una playlist que no puede leerse queda marcada como incompleta; nunca se considera vacía. Ver [quota modes](https://developer.spotify.com/documentation/web-api/concepts/quota-modes) y [cambios de API](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide).
+
+## Lista manual para Apple Music, sin membresía Developer
+
+La sección **Agregar a Apple Music** compara las canciones de Spotify con una exportación local de Música y prepara una lista que podés ir marcando. Sólo necesita la conexión de Spotify: no usa MusicKit ni solicita permiso para controlar Música.
+
+1. En Música del Mac, elegí **Archivo → Biblioteca → Exportar biblioteca…** y guardá el XML.
+2. En SpotAM Sync, abrí **Agregar a Apple Music** e importá ese archivo.
+3. Conectá Spotify desde **Conexiones** y generá la lista. Se incluyen canciones de playlists, canciones guardadas y pistas de álbumes guardados, sin repetir una fila por cada aparición en una playlist.
+4. Usá **Elegir equivalente** para comparar opciones por artista, álbum y canción. Podés elegir una referencia, descartarla, dejarla pendiente u omitirla. Abrila con **Buscar en Apple Music**, agregala desde Música y marcala en la lista. Podés desmarcarla si necesitás revisarla otra vez.
+5. Para comprobar incorporaciones, exportá de nuevo la biblioteca de Música, importá el XML actualizado y volvé a comparar.
+
+Los filtros separan pendientes, coincidencias para revisar, marcas manuales y canciones presentes en la exportación. Las marcas y la última lista se guardan localmente para continuar después de cerrar la app; quedan separadas por cuenta de Spotify y biblioteca de Música. El ejemplo de esta pantalla usa datos ficticios y no reemplaza la lista real guardada.
+
+**Una marca sólo registra tu avance:** no agrega canciones ni confirma cambios en Apple Music. “Presente” significa que se encontró una coincidencia compatible en el XML importado. La app muestra las fechas de los inventarios; una exportación anterior puede no reflejar cambios recientes ni todo el estado cloud. Las versiones ambiguas, los metadatos insuficientes y las lecturas parciales quedan para revisión. Los identificadores locales del XML nunca se convierten en identificadores del catálogo.
+
+El XML se procesa en el Mac. Las consultas online se hacen al pulsar **Buscar opciones** o **Ver canciones del álbum**: envían los términos de artista, álbum y canción, sin subir el XML. Si Apple Music está conectado, se consulta su catálogo oficial; en caso contrario se usa la búsqueda pública de iTunes y el país indicado en el comparador. Los resultados públicos son referencias sin validar: no prueban presencia en tu biblioteca ni se usan para ejecutar una sincronización. Elegir una alternativa tampoco marca la canción como agregada. La demo busca solamente en sus datos locales. No se habilitan eliminaciones ni otras escrituras en Música dentro de este flujo.
+
+## Buscar y elegir equivalencias
+
+En **Coincidencias → Buscar y comparar alternativas**, el flujo oficial prueba ISRC y, si no encuentra una edición inequívoca, amplía por artista, álbum y canción, pistas de álbumes y finalmente artista con canción. Apple puede devolver varios recursos para un ISRC: se recuperan las referencias adicionales antes de evaluar la edición.
+
+El comparador permite editar los términos, listar canciones de un álbum, filtrar los resultados por artista o álbum, abrirlos en el servicio y elegir, descartar, dejar pendiente u omitir. Muestra duración, contenido explícito y diferencias de versión. **Una grabación de otro álbum, recopilación o edición siempre requiere tu elección**, aunque comparta ISRC. Metadatos desconocidos, versiones diferentes y ambigüedades tampoco se aceptan automáticamente.
+
+Las búsquedas están acotadas: hasta tres páginas por consulta, tres álbumes con dos páginas de pistas cada uno y 200 candidatos mostrados en la búsqueda oficial. Las referencias Apple de un ISRC se acotan a 25. Llegar a un límite, recibir datos incompletos o fallar una consulta deja la cobertura incompleta; no equivale a ausencia. Los límites de frecuencia detienen nuevas consultas durante el plazo indicado por el proveedor. La búsqueda pública de iTunes se espacia y siempre se informa como no exhaustiva porque no ofrece paginación documentada.
+
+Las decisiones oficiales se guardan por cuentas y storefront y se revalidan en el próximo análisis; las elecciones del checklist quedan separadas por cuenta de Spotify y biblioteca XML. Una elección online del checklist es sólo una referencia; la presencia se verifica mediante una nueva exportación. Cambiar una correspondencia recalcula la vista previa y revoca la aprobación anterior. La elección por sí sola no escribe en los servicios.
+
+## Conectar Apple Music mediante la integración oficial
+
+La integración oficial requiere que quien registra y distribuye la app tenga una membresía del **Apple Developer Program**, una app correctamente firmada y un App ID explícito con MusicKit habilitado. Los usuarios del grupo sólo necesitan autorizar sus bibliotecas; no necesitan ser desarrolladores. El build local ad hoc sirve para desarrollar, usar la demostración y conectar Spotify; **no habilita MusicKit por sí solo**.
+
+1. Configurá el App ID en Apple Developer y habilitá MusicKit.
+2. Prepará una identidad de firma de tu equipo de Apple Developer en Keychain.
+3. Compilá con ese Bundle ID y la identidad que corresponda:
+
+```sh
+APP_BUNDLE_ID=com.tuorganizacion.spotamsync \
+SIGNING_IDENTITY='Developer ID Application: Tu organización (TEAMID)' \
+bash scripts/build-app.sh
+```
+
+MusicKit se habilita como **App Service** del App ID; no tiene un entitlement propio que deba inventarse o agregarse al paquete. El script firma la app; la solicitud autenticada comprueba su acceso efectivo al servicio. No se distribuye una clave privada `.p8` ni se necesita un servidor propio para custodiarla. Ver [aclaración oficial de Apple](https://developer.apple.com/forums/thread/784114).
+
+Después de `MusicAuthorization`, la app obtiene el developer token y el Music User Token mediante las APIs públicas de `DefaultMusicTokenProvider`. Las solicitudes REST usan una sesión HTTP efímera con esos tokens fijados, exclusivamente contra `https://api.music.apple.com`, sin redirects. Los tokens Apple permanecen en memoria y no se incluyen en diagnósticos. Un HTTP 401 exige reconectar explícitamente.
+
+La cuenta debe permitir acceso a su biblioteca cloud. La identidad local representa la autorización mediante SHA-256 del Music User Token; no identifica un Apple ID. Es estable mientras el SDK entregue el mismo token. Una rotación cambia la identidad, aunque pertenezca a la misma cuenta. Cada reconexión genera una revisión nueva para invalidar aprobaciones anteriores. Nunca se supone que una cuenta de Música y una autorización distinta representan la misma biblioteca.
+
+Documentación: [autorización](https://developer.apple.com/documentation/applemusicapi/user-authentication-for-musickit), [generación automática de tokens](https://developer.apple.com/documentation/musickit/using-automatic-token-generation-for-apple-music-api).
+
+## Qué sincroniza
+
+- **Fusionar:** agrega elementos faltantes sin quitar contenido existente.
+- **Spotify como base:** propone los cambios en Apple Music.
+- **Apple Music como base:** propone los cambios en Spotify.
+- Playlists: nombre, descripción, secuencia y multiplicidad de canciones.
+- Canciones guardadas y álbumes, manteniendo sus estados separados de las playlists.
+- Coincidencias por identificadores y metadatos, con revisión manual para ambigüedades.
+- Vínculos manuales entre playlists y protección de playlists seleccionadas.
+
+Los “Me gusta” de Spotify se tratan como canciones guardadas. Los favoritos de Apple no se modifican. Guardar parte de un álbum no equivale a guardar su edición completa.
+
+Una canción “suelta” es una canción guardada que no se encontró en las playlists analizadas. El resumen incluye el detalle de esas canciones y de los álbumes completos sin pistas presentes en playlists. Los álbumes parciales aportan sólo sus pistas guardadas. Si faltan playlists, contenidos o identificadores, la clasificación queda por confirmar; no se presenta un total definitivo.
+
+## Límites reales del espejo
+
+Spotify permite las altas, bajas y actualizaciones contempladas, sujeto a acceso y propiedad. Quitar una playlist significa quitarla de la biblioteca del usuario, no destruirla para sus seguidores.
+
+Apple Music documenta altas en biblioteca, creación de playlists y adición de canciones al final. Su API REST pública no documenta bajas generales de biblioteca, eliminación de playlists, edición de metadatos existentes ni reordenamiento/reemplazo de contenido. Esas operaciones se muestran en la vista previa **bloqueadas**, con explicación. No se sustituyen por endpoints privados o borrados no comprobados. Una ejecución con diferencias pendientes no se presenta como un espejo completo.
+
+La automatización de Música en macOS requiere validación adicional de identidad, efectos sobre biblioteca y propagación cloud. La disponibilidad de un comando `delete` en su diccionario no demuestra que sea seguro aplicarlo a recursos cloud. No está habilitada para escrituras. Detalles en [capacidades de Apple](docs/APPLE_CAPABILITIES.md).
+
+## Ejecución y recuperación
+
+1. La app guarda el plan aprobado y los inventarios anteriores en SQLite antes de escribir.
+2. Comprueba que las conexiones y el estado no cambiaron desde la vista previa.
+3. Aplica primero altas y después operaciones destructivas autorizadas.
+4. Cada lote tiene un registro durable de intención, respuesta y verificación.
+5. Relee el servicio para comprobar el resultado, incluyendo orden y repeticiones.
+6. Un timeout de escritura se considera incierto hasta reconciliarlo. No se repite ciegamente.
+7. Cambios externos y efectos adicionales del servicio detienen la ejecución para un nuevo análisis.
+
+Las operaciones grandes se dividen en pasos durables antes de enviarlas: una creación conserva su ID y las adiciones posteriores dependen de esa creación verificada. Si un lote se verifica y el siguiente falla, el primero no se vuelve a enviar. Un rechazo inequívoco del proveedor queda separado de un resultado incierto; permite preparar otra vista previa sin bloquearla como si hubiera una escritura desconocida. Los timeouts y errores ambiguos siguen requiriendo reconciliación. Los registros antiguos inciertos conservan esa protección.
+
+**Cancelar** detiene nuevas operaciones y reconcilia la que estaba en curso. **Comprobar pendientes** sólo lee el servicio para resolver resultados inciertos, incluso después de reiniciar y reconectar cuando puede verificarse la misma identidad. Para enviar nuevas operaciones hay que analizar y confirmar una nueva vista previa. Cambiar el modo, las protecciones o las correspondencias revoca las aprobaciones anteriores.
+
+Una lectura sin cambios no prueba que una petición haya sido rechazada: Apple puede tardar en reflejar las altas. Las creaciones y adiciones inciertas no se reenvían automáticamente. Mientras haya una escritura sin resolver, se bloquean nuevas ejecuciones que puedan solaparse, también después de reiniciar la app. No se permite escribir con un inventario incompleto.
+
+El historial permite exportar el resultado y el respaldo en JSON. El respaldo conserva metadatos y estructura; no contiene archivos de audio ni tokens. No existe una promesa de restauración automática perfecta: algunas operaciones inversas no están soportadas o perderían identificadores y enlaces.
+
+Datos locales: `~/Library/Application Support/SpotAMSync/library-sync.sqlite`, con permisos privados. Para pruebas aisladas se puede definir `SPOTAM_DATA_DIR` antes de iniciar el ejecutable. Los tokens de Spotify se almacenan aparte, en Keychain.
+
+## Distribuir al grupo
+
+Antes de distribuir, verificá el número de usuarios autorizados en Spotify, habilitá MusicKit para el App ID, firmá con Developer ID y notarizá la app. Guardá las credenciales de notarización en Keychain mediante `notarytool`, fuera del repositorio:
+
+```sh
+NOTARY_PROFILE=tu-perfil-de-keychain bash scripts/notarize.sh
+```
+
+El script envía el paquete a Apple, espera el resultado y adjunta el ticket. No se ejecuta durante una compilación local normal. Las claves, certificados y perfiles privados no se incluyen en Git.
 
 ## Estructura
 
-```
-src/
-  main/index.ts          Proceso principal: ventana, seguridad, enlaces externos
-  preload/index.ts       Puente mínimo al renderer (solo la plataforma)
-  renderer/
-    index.html           Entrada con Content-Security-Policy estricta
-    src/
-      styles/global.css  Tokens de diseño (colores, vidrio, radios, tipografía)
-      components/        Íconos, botones, interruptores, barra superior, menú y barra de sync
-      screens/           Una pantalla por archivo, cada una con su CSS module
-      store/             Estado de la app (reducer, selectores, tests)
-      data/              Datos y portadas de ejemplo
-      router.tsx         Rutas por hash (funcionan con file://)
-```
+- `Sources/SyncCore`: modelos, alcance, configuraciones, programación de lecturas, coincidencias, planificación, propuestas inversas, journal SQLite y ejecutor.
+- `Sources/MusicProviders`: OAuth, Keychain, transporte HTTP y adaptadores oficiales.
+- `Sources/SpotAMSync`: interfaz SwiftUI, coordinación de la cola, preferencias y notificaciones nativas.
+- `Tests`: pruebas de contratos, coincidencias, fallos de red, paginación, recuperación y concurrencia.
+- `scripts`: compilación del paquete, pruebas y notarización.
 
-## Decisiones de diseño
-
-- **Tipografía:** SF Pro en Mac (fuente del sistema) e Inter como respaldo en Windows y Linux, incluida en la app.
-- **Acento monocromo** (`#F2F2F7`) con texto oscuro encima. Verde y rosa quedan solo como marcas de Spotify y Apple Music; el naranja es el estado "Revisar".
-- **Ventana sin barra de título nativa:** en Mac se ven los semáforos sobre la barra superior; en Windows y Linux, los controles nativos a la derecha. La barra superior sirve para arrastrar la ventana.
-- **Seguridad:** `contextIsolation`, `sandbox` y sin `nodeIntegration`; navegación bloqueada fuera de la app y enlaces `https` en el navegador del sistema.
-
-## Próximos pasos
-
-1. **Spotify:** OAuth con PKCE y Web API (playlists, canciones, ISRC). Hace falta un Client ID de Spotify.
-2. **Apple Music:** MusicKit con un developer token firmado con una clave de Apple Developer, más el user token del usuario.
-3. **Comparación:** buscar por ISRC y, si no hay, por título, artista y duración (con la tolerancia de Ajustes), y mandar lo dudoso a Revisar.
-4. **Sync automática:** programarla desde el proceso principal y avisar con notificaciones nativas.
-
-Las portadas de ejemplo son fotos de Unsplash; ver [CREDITS.md](CREDITS.md).
+Las pruebas usan proveedores y transportes controlados; no modifican cuentas reales. La aceptación con cuentas reales requiere completar las autorizaciones y verificar primero contenido destinado a pruebas.

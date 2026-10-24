@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>CFBundleIdentifier</key><string>com.lamarcab.spotamsync</string>
+    <key>CFBundleName</key><string>SpotAM Sync</string>
+    <key>CFBundleDisplayName</key><string>SpotAM Sync</string>
+    <key>CFBundleExecutable</key><string>SpotAMSync</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>0.2.0</string>
+    <key>CFBundleVersion</key><string>2</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>LSApplicationCategoryType</key><string>public.app-category.music</string>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSAppleMusicUsageDescription</key><string>SpotAM Sync compara tus playlists y tu biblioteca con Spotify, y aplica únicamente los cambios que confirmes.</string>
+    <key>NSPrincipalClass</key><string>NSApplication</string>
+</dict></plist>

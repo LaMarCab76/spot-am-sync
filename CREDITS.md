@@ -1,6 +1,6 @@
-# Créditos
+# Créditos históricos de la interfaz Electron
 
-Las portadas de ejemplo en `src/renderer/src/assets/covers/` son fotos de [Unsplash](https://unsplash.com), descargadas a través de [Lorem Picsum](https://picsum.photos), y se usan bajo la [licencia de Unsplash](https://unsplash.com/license). Son de muestra: en la app real se reemplazan por las portadas que devuelvan Spotify y Apple Music.
+Las portadas de ejemplo de la implementación Electron, conservadas en su historial Git, eran fotos de [Unsplash](https://unsplash.com), descargadas a través de [Lorem Picsum](https://picsum.photos), y se usan bajo la [licencia de Unsplash](https://unsplash.com/license). Esos archivos ya no forman parte de la app activa. SwiftUI utiliza las portadas devueltas por Spotify o Apple Music y marcadores locales cuando faltan.
 
 | Archivo | Autor | Foto original |
 |---|---|---|
