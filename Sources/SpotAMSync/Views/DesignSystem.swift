@@ -6,19 +6,13 @@ import SyncCore
 typealias ViewState<Value> = SwiftUI.State<Value>
 
 enum SyncStyle {
-    static let green = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0.40, green: 0.85, blue: 0.65, alpha: 1)
-            : NSColor(srgbRed: 0.10, green: 0.43, blue: 0.30, alpha: 1)
-    })
-    static let coral = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 1, green: 0.57, blue: 0.48, alpha: 1)
-            : NSColor(srgbRed: 0.76, green: 0.25, blue: 0.20, alpha: 1)
-    })
-    static let background = Color(nsColor: .windowBackgroundColor)
-    static let surface = Color(nsColor: .controlBackgroundColor)
-    static let border = Color.primary.opacity(0.09)
+    static let green = Color(red: 0.95, green: 0.95, blue: 0.97)
+    static let coral = Color(red: 1, green: 0.68, blue: 0.37)
+    static let spotify = Color(red: 0.12, green: 0.84, blue: 0.39)
+    static let apple = Color(red: 0.98, green: 0.32, blue: 0.43)
+    static let background = Color.black
+    static let surface = Color(white: 0.055)
+    static let border = Color.white.opacity(0.10)
 }
 
 struct SurfaceCard<Content: View>: View {
@@ -38,9 +32,9 @@ struct PageHeading: View {
     let subtitle: String
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(eyebrow.uppercased()).font(.system(size: 10, weight: .bold, design: .rounded))
+            Text(eyebrow.uppercased()).font(.system(size: 10, weight: .semibold))
                 .tracking(1.6).foregroundStyle(SyncStyle.green)
-            Text(title).font(.system(size: 28, weight: .bold, design: .rounded))
+            Text(title).font(.system(size: 32, weight: .semibold))
             Text(subtitle).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -53,9 +47,9 @@ struct ServiceMark: View {
     var body: some View {
         Image(systemName: service == .spotify ? "waveform" : "music.note")
             .font(.system(size: size * 0.44, weight: .semibold))
-            .foregroundStyle(service == .spotify ? SyncStyle.green : SyncStyle.coral)
+            .foregroundStyle(service == .spotify ? SyncStyle.spotify : SyncStyle.apple)
             .frame(width: size, height: size)
-            .background((service == .spotify ? SyncStyle.green : SyncStyle.coral).opacity(0.12), in: RoundedRectangle(cornerRadius: size * 0.28))
+            .background((service == .spotify ? SyncStyle.spotify : SyncStyle.apple).opacity(0.12), in: RoundedRectangle(cornerRadius: size * 0.28))
             .accessibilityLabel(service.name)
     }
 }

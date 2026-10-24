@@ -8,8 +8,8 @@ struct SpotAMSyncApp: App {
     @ViewState private var didLaunch = false
 
     var body: some Scene {
-        WindowGroup("SpotAM Sync") {
-            MainView()
+        WindowGroup("SpotAM Sync", id: "main") {
+            MainView(registerReopen: { action in appDelegate.reopenMainWindow = { action(id: "main") } })
                 .environmentObject(model)
                 .environment(\.locale, Locale(identifier: "es_AR"))
                 .onAppear {
@@ -19,10 +19,13 @@ struct SpotAMSyncApp: App {
                     NSApplication.shared.activate(ignoringOtherApps: true)
                 }
         }
-        .defaultSize(width: 1150, height: 800)
+        .defaultSize(width: 1380, height: 900)
         .windowResizability(.contentMinSize)
         .commands {
-            CommandGroup(replacing: .newItem) {}
+            CommandGroup(replacing: .newItem) {
+                Button("Abrir ventana principal") { appDelegate.reopenMainWindow?() }
+                    .keyboardShortcut("0", modifiers: .command)
+            }
             CommandMenu("Bibliotecas") {
                 Button("Analizar bibliotecas") { model.analyze() }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
@@ -39,9 +42,9 @@ struct SpotAMSyncApp: App {
                 if model.isDemo {
                     Notice(title: "Modo demostración", message: "Las cuentas y bibliotecas mostradas son de ejemplo. Conectá tus servicios para trabajar con datos reales.", symbol: "flask", color: SyncStyle.coral).padding(16)
                 }
-                ConnectionsView()
+                AppSettingsView()
             }
-            .environmentObject(model).environment(\.locale, Locale(identifier: "es_AR")).tint(SyncStyle.green)
+            .environmentObject(model).environment(\.locale, Locale(identifier: "es_AR")).tint(SyncStyle.green).preferredColorScheme(.dark)
             .frame(minWidth: 740, idealWidth: 800, minHeight: 620, idealHeight: 740)
             .alert("No se pudo completar la acción", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
                 Button("Entendido", role: .cancel) { model.errorMessage = nil }
@@ -51,9 +54,14 @@ struct SpotAMSyncApp: App {
 }
 
 final class SpotAMSyncAppDelegate: NSObject, NSApplicationDelegate {
+    var reopenMainWindow: (() -> Void)?
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { reopenMainWindow?() }
+        return true
+    }
 }

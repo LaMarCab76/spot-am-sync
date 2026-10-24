@@ -8,15 +8,16 @@ public enum CatalogMatcher {
             return TrackMatch(sourceService: sourceService, source: source, confidence: .unavailable,
                               reason: "La canción de origen es local o no está disponible en el catálogo.")
         }
-        let plausible = unique(candidates.filter {
+        let plausible = ranked(source, candidates: candidates.filter {
             $0.available && !$0.isLocal && !$0.playableID.isEmpty &&
             (sameCode(source.isrc, $0.isrc) ||
-             (sameText(source.title, $0.title) && sameText(source.artist, $0.artist)))
+             (similar(source.title, $0.title) && similar(source.artist, $0.artist)))
         })
         let exact = plausible.filter { candidate in
             guard sameText(source.title, candidate.title), sameText(source.artist, candidate.artist),
                   durationAgrees(source.durationMS, candidate.durationMS),
-                  source.explicit == candidate.explicit,
+                  source.explicit != nil, candidate.explicit != nil, source.explicit == candidate.explicit,
+                  sameText(source.albumTitle, candidate.albumTitle),
                   editions(source.title + " " + source.albumTitle) == editions(candidate.title + " " + candidate.albumTitle)
             else { return false }
             // A contradictory identifier or album edition must be reviewed even
@@ -72,7 +73,7 @@ public enum CatalogMatcher {
         return result
     }
 
-    static func normalized(_ value: String) -> String {
+    public static func normalized(_ value: String) -> String {
         value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
             .components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }.joined(separator: " ")
     }
@@ -106,18 +107,21 @@ public enum CatalogMatcher {
     }
 
     public static func unique(_ candidates: [Track]) -> [Track] {
-        var seen = Set<Track>()
-        return candidates.filter { seen.insert(canonical($0)).inserted }
+        var result: [Track] = []
+        for candidate in candidates where !result.contains(where: { sameIdentityMetadata($0, candidate) }) { result.append(candidate) }
+        return result
     }
 
     private static func canonical(_ track: Track) -> Track {
-        var value = track; value.id = track.playableID; value.catalogID = track.playableID; return value
+        Track(id: track.playableID, catalogID: track.playableID, title: track.title, artist: track.artist,
+              albumTitle: track.albumTitle, durationMS: track.durationMS, isrc: track.isrc, explicit: track.explicit,
+              available: track.available, isLocal: track.isLocal)
     }
 
     public static func uniqueAlbums(_ candidates: [Album]) -> [Album] {
         var seen = Set<Album>()
         return candidates.filter { album in
-            var value = album; value.id = album.playableID; value.catalogID = album.playableID
+            var value = album; value.id = album.playableID; value.catalogID = album.playableID; value.artworkURL = nil
             value.tracks = album.tracks.map(canonical)
             return seen.insert(value).inserted
         }
@@ -125,5 +129,48 @@ public enum CatalogMatcher {
 
     private static func unambiguousIdentity(_ candidate: Track, in candidates: [Track]) -> Bool {
         candidates.filter { $0.playableID == candidate.playableID }.count == 1
+    }
+
+    /// Broader discovery is deliberately separate from the exact-match predicate.
+    public static func similar(_ left: String, _ right: String) -> Bool {
+        let ignored: Set<String> = ["feat", "featuring", "ft", "with"]
+        let lhs = Set(normalized(left).split(separator: " ").map(String.init)).subtracting(ignored)
+        let rhs = Set(normalized(right).split(separator: " ").map(String.init)).subtracting(ignored)
+        guard !lhs.isEmpty, !rhs.isEmpty else { return false }
+        return Double(lhs.intersection(rhs).count) / Double(max(lhs.count, rhs.count)) >= 0.6
+    }
+
+    public static func ranked(_ source: Track, candidates: [Track]) -> [Track] {
+        func score(_ value: Track) -> Int {
+            (sameCode(source.isrc, value.isrc) ? 100 : 0) +
+            (sameText(source.title, value.title) ? 35 : similar(source.title, value.title) ? 15 : 0) +
+            (sameText(source.artist, value.artist) ? 30 : similar(source.artist, value.artist) ? 12 : 0) +
+            (sameText(source.albumTitle, value.albumTitle) ? 25 : 0) +
+            (durationAgrees(source.durationMS, value.durationMS) ? 10 : 0)
+        }
+        return unique(candidates).sorted {
+            let left = score($0), right = score($1)
+            if left != right { return left > right }
+            return [$0.artist, $0.albumTitle, $0.title, $0.playableID, $0.id, String($0.durationMS)]
+                .lexicographicallyPrecedes([$1.artist, $1.albumTitle, $1.title, $1.playableID, $1.id, String($1.durationMS)])
+        }
+    }
+
+    public static func comparison(_ source: Track, _ candidate: Track) -> String {
+        var details: [String] = []
+        if sameCode(source.isrc, candidate.isrc) { details.append("Mismo ISRC") }
+        if !sameText(source.albumTitle, candidate.albumTitle) { details.append("Otro álbum o edición: elegí si corresponde") }
+        if !sameText(source.artist, candidate.artist) { details.append("Créditos de artista diferentes") }
+        if !sameText(source.title, candidate.title) { details.append("Título o versión diferente") }
+        if source.explicit == nil || candidate.explicit == nil { details.append("Contenido explícito sin confirmar") }
+        else if source.explicit != candidate.explicit { details.append("Contenido explícito diferente") }
+        if !durationAgrees(source.durationMS, candidate.durationMS) { details.append("Duración diferente o desconocida") }
+        return details.isEmpty ? "Metadatos compatibles" : details.joined(separator: " · ")
+    }
+
+    public static func sameIdentityMetadata(_ lhs: Track, _ rhs: Track) -> Bool {
+        lhs.playableID == rhs.playableID && lhs.title == rhs.title && lhs.artist == rhs.artist &&
+        lhs.albumTitle == rhs.albumTitle && lhs.durationMS == rhs.durationMS && lhs.isrc == rhs.isrc &&
+        lhs.explicit == rhs.explicit && lhs.available == rhs.available && lhs.isLocal == rhs.isLocal
     }
 }

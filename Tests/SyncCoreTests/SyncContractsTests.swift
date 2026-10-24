@@ -41,6 +41,19 @@ final class SyncContractsTests: XCTestCase {
         }
     }
 
+    func testStagedManualDecisionSurvivesCoverageAndLegacyJSON() throws {
+        let s = song("s"), a = song("a")
+        var choice = TrackMatch(sourceService: .spotify, source: s, candidates: [a], selected: a)
+        choice.decision = .manual; choice.searchCoverage = .partial
+        let decoded = try JSONDecoder().decode(TrackMatch.self, from: JSONEncoder().encode(choice))
+        let updated = CatalogSearch.match(source: s, sourceService: .spotify, result: .init(candidates: [a], coverage: .limited), previous: decoded)
+        XCTAssertEqual(updated.decision, .manual); XCTAssertEqual(updated.selected, a)
+        let snapshots = [LibrarySnapshot(account: .init(id: "s", service: .spotify, displayName: "S"), savedTracks: [s]),
+                         LibrarySnapshot(account: .init(id: "a", service: .appleMusic, displayName: "A"))]
+        let plan = SyncPlanner.makePlan(snapshots: snapshots, mode: .spotifyBase, decisions: .init(tracks: [decoded]), capabilities: [.spotify: .spotify, .appleMusic: .appleMusic])
+        XCTAssertEqual(plan.executable.map(\.kind), [.saveTracks])
+    }
+
     func testReplacementStepsPreserveOrderMultiplicityAndPreconditions() {
         let tracks = (0..<205).map { song("\($0 % 3)") }
         let operation = SyncOperation(service: .spotify, kind: .replacePlaylistTracks, targetID: "p", title: "List", tracks: tracks, beforeTrackIDs: ["old"])

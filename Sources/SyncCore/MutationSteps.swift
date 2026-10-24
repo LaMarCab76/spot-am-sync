@@ -13,7 +13,13 @@ public struct MutationLimits: Sendable {
 /// Playlist writes have one journal entry per request, including the empty creation.
 enum MutationSteps {
     static func prepare(_ operation: SyncOperation, limits: MutationLimits?) -> [OperationExecution] {
-        guard let limits else { return [OperationExecution(operation: operation)] }
+        guard let limits else {
+            // Keep playlist request boundaries in demos and custom providers too.
+            if [.createPlaylist, .replacePlaylistTracks, .addPlaylistTracks].contains(operation.kind) {
+                return prepare(operation, limits: .init(libraryItems: 40, playlistItems: 100))
+            }
+            return [OperationExecution(operation: operation)]
+        }
         var parts: [SyncOperation] = []
         switch operation.kind {
         case .saveTracks, .removeTracks:
@@ -25,7 +31,7 @@ enum MutationSteps {
                 var part = operation; part.albums = [album]; return part
             }
         case .createPlaylist, .replacePlaylistTracks, .addPlaylistTracks:
-            var previous = operation.beforeTrackIDs ?? []
+            var previous = operation.beforeTrackIDs
             var remaining = operation.tracks
             if operation.kind == .createPlaylist {
                 var creation = operation; creation.tracks = []; parts.append(creation); previous = []
@@ -40,7 +46,7 @@ enum MutationSteps {
                 append.tracks = Array(remaining.prefix(limits.playlistItems))
                 append.beforeTrackIDs = previous
                 parts.append(append)
-                previous += append.tracks.map(\.playableID)
+                previous = previous.map { $0 + append.tracks.map(\.playableID) }
                 remaining = Array(remaining.dropFirst(limits.playlistItems))
             }
         default: parts = [operation]
@@ -48,8 +54,10 @@ enum MutationSteps {
         if parts.isEmpty { parts = [operation] }
         for i in parts.indices { parts[i].id = i == 0 ? operation.id : UUID() }
         return parts.enumerated().map { index, part in
-            OperationExecution(operation: part, parentOperationID: operation.id,
+            var execution = OperationExecution(operation: part, parentOperationID: operation.id,
                                creationDependencyID: operation.kind == .createPlaylist && index > 0 ? parts[0].id : nil)
+            execution.createdByOperationID = execution.creationDependencyID
+            return execution
         }
     }
 }

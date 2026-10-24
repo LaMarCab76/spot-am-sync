@@ -5,8 +5,16 @@ public enum SyncPlanner {
     /// Plans exclusively from the supplied snapshots and decisions; no provider
     /// calls, clock reads, account changes, or mutation of the base library.
     public static func makePlan(snapshots: [LibrarySnapshot], mode: SyncMode, decisions: MatchDecisions,
-                                capabilities: [MusicService: ProviderCapabilities]) -> SyncPlan {
-        var builder = PlanBuilder(snapshots: snapshots, mode: mode, decisions: decisions, capabilities: capabilities)
+                                capabilities: [MusicService: ProviderCapabilities], request: SyncRequest? = nil) -> SyncPlan {
+        var scopedDecisions = decisions
+        if let request, request.options.existingPlaylist == .update {
+            for target in request.playlistTargets ?? [] {
+                let link = target.source.service == .spotify ? PlaylistLink(spotifyID: target.source.playlistID, appleMusicID: target.targetID) : PlaylistLink(spotifyID: target.targetID, appleMusicID: target.source.playlistID)
+                scopedDecisions.playlists.removeAll { $0.spotifyID == link.spotifyID || $0.appleMusicID == link.appleMusicID }
+                scopedDecisions.playlists.append(link)
+            }
+        }
+        var builder = PlanBuilder(snapshots: snapshots, mode: mode, decisions: scopedDecisions, capabilities: capabilities, request: request)
         return builder.build()
     }
 }
@@ -32,6 +40,9 @@ private struct PlanBuilder {
     let mode: SyncMode
     let decisions: MatchDecisions
     let capabilities: [MusicService: ProviderCapabilities]
+    let request: SyncRequest?
+    var planningSource: PlaylistReference?
+    var mappingPairs = false
     var libraries: [MusicService: LibrarySnapshot] = [:]
     var operations: [SyncOperation] = []
     var issues: [PlanIssue] = []
@@ -64,10 +75,30 @@ private struct PlanBuilder {
             }
         }
         guard libraries.count == MusicService.allCases.count else { return finish() }
-        let pairs = playlistPairs()
+        if let request {
+            guard request.mode == mode, request.matches(accounts: snapshots.map(\.account)),
+                  !request.playlists.isEmpty || request.includeSavedLibrary,
+                  !(mode == .merge && request.options.existingPlaylist == .copy),
+                  request.playlists.allSatisfy({ ref in
+                      (mode.base == nil || mode.base == ref.service) &&
+                      libraries[ref.service]!.playlists.filter { $0.id == ref.playlistID }.count == 1
+                  }),
+                  (request.playlistTargets ?? []).allSatisfy({ request.playlists.contains($0.source) && !$0.targetID.isEmpty }),
+                  Set((request.playlistTargets ?? []).map { $0.source.id }).count == (request.playlistTargets ?? []).count,
+                  Set((request.playlistTargets ?? []).map { "\($0.source.service.other.rawValue):\($0.targetID)" }).count == (request.playlistTargets ?? []).count,
+                  request.copyTargets.allSatisfy({ request.playlists.contains($0.source) && !$0.targetID.isEmpty }),
+                  Set(request.copyTargets.map { $0.source.id }).count == request.copyTargets.count,
+                  Set(request.copyTargets.map { "\($0.source.service.other.rawValue):\($0.targetID)" }).count == request.copyTargets.count else {
+                issue("scope-invalid", "Configuración pendiente", "El alcance, la dirección o las cuentas cambiaron. Revisá la configuración antes de preparar cambios.")
+                return finish()
+            }
+        }
+        mappingPairs = true
+        let pairs = request?.options.existingPlaylist == .copy ? PlaylistPairs() : playlistPairs()
+        mappingPairs = false
         let directions: [MusicService] = mode.base.map { [$0] } ?? MusicService.allCases
         for service in directions {
-            planLibrary(from: service)
+            if request == nil || request?.includeSavedLibrary == true { planLibrary(from: service) }
             planPlaylists(from: service, pairs: pairs)
         }
         return finish()
@@ -80,13 +111,14 @@ private struct PlanBuilder {
 
     func finish() -> SyncPlan {
         let date = snapshots.map(\.fetchedAt).max() ?? Date(timeIntervalSince1970: 0)
-        var plan = SyncPlan(id: zeroID, createdAt: date, mode: mode, snapshots: snapshots, operations: operations, issues: issues)
+        var plan = SyncPlan(id: zeroID, createdAt: date, mode: mode, snapshots: snapshots, operations: operations, issues: issues, request: request)
         plan.id = stableID(encoded(plan))
         return plan
     }
 
     mutating func append(_ proposed: SyncOperation, playlist: Playlist? = nil) {
         var operation = proposed
+        operation.sourcePlaylist = planningSource
         var reasons = operation.blockedReason.map { [$0] } ?? []
         if let capability = capabilities[operation.service] {
             if !capability.supported.contains(operation.kind) {
@@ -117,7 +149,12 @@ private struct PlanBuilder {
 
     mutating func track(_ source: Track, from service: MusicService) -> Track? {
         let key = "\(service.rawValue):\(source.id)"
-        if let cached = trackCache[key] { return cached.selected }
+        if let cached = trackCache[key] {
+            if cached.selected == nil, request == nil || !mappingPairs {
+                issue("track:\(key)", "Canción sin coincidencia confirmada", "«\(source.title)» — \(source.artist). \(cached.reason)", service)
+            }
+            return cached.selected
+        }
         let destination = libraries[service.other]!
         let supplied = decisions.tracks.filter { $0.sourceService == service && $0.source.id == source.id }
         var result: TrackMatch
@@ -132,7 +169,7 @@ private struct PlanBuilder {
         } else {
             let reverse = decisions.tracks.filter {
                 $0.sourceService == service.other && $0.selected?.playableID == source.playableID && $0.confidence != .unavailable &&
-                    ($0.searchCoverage == nil || $0.searchCoverage == .complete || $0.manualSelection == true)
+                    ($0.searchCoverage == nil || $0.searchCoverage == .complete || ($0.manualSelection == true || $0.decision == .manual))
             }
             if !reverse.isEmpty {
                 let targets = Set(reverse.map { $0.source.playableID })
@@ -146,7 +183,7 @@ private struct PlanBuilder {
             }
         }
         if let selected = result.selected {
-            if (result.searchCoverage != nil && result.searchCoverage != .complete && result.manualSelection != true) ||
+            if (result.searchCoverage != nil && result.searchCoverage != .complete && result.manualSelection != true && result.decision != .manual) ||
                 !selected.available || selected.isLocal || selected.playableID.isEmpty || result.confidence == .unavailable ||
                 trackConflicts[service.other, default: []].contains(selected.id) || trackConflicts[service.other, default: []].contains(selected.playableID) {
                 result.selected = nil
@@ -154,7 +191,7 @@ private struct PlanBuilder {
             }
         }
         trackCache[key] = result
-        if result.selected == nil {
+        if result.selected == nil, request == nil || !mappingPairs {
             issue("track:\(key)", "Canción sin coincidencia confirmada", "«\(source.title)» — \(source.artist). \(result.reason)", service)
         }
         return result.selected
@@ -203,7 +240,30 @@ private struct PlanBuilder {
     }
 
     mutating func mapped(_ playlist: Playlist, from service: MusicService) -> [Track] {
-        playlist.tracks.compactMap { track($0, from: service) }
+        let translated = playlist.tracks.compactMap { track($0, from: service) }
+        return request?.options.skipDuplicates == true ? uniqueTracks(translated) : translated
+    }
+
+    func inScope(_ id: String, service: MusicService, pairs: PlaylistPairs) -> Bool {
+        guard let request else { return true }
+        if request.playlists.contains(PlaylistReference(service: service, playlistID: id)) { return true }
+        guard mode == .merge, let other = pairs.target(for: id, from: service) else { return false }
+        return request.playlists.contains(PlaylistReference(service: service.other, playlistID: other))
+    }
+
+    func relatedPlaylist(_ id: String, service: MusicService) -> Bool {
+        guard let request else { return true }
+        let ref = PlaylistReference(service: service, playlistID: id)
+        if request.playlists.contains(ref) { return true }
+        if (request.playlistTargets ?? []).contains(where: { $0.source.service.other == service && $0.targetID == id }) { return true }
+        if decisions.playlists.contains(where: { link in
+            let other = service == .spotify ? PlaylistReference(service: .appleMusic, playlistID: link.appleMusicID) : PlaylistReference(service: .spotify, playlistID: link.spotifyID)
+            return (service == .spotify ? link.spotifyID : link.appleMusicID) == id && request.playlists.contains(other)
+        }) { return true }
+        guard let list = libraries[service]?.playlists.first(where: { $0.id == id }) else { return false }
+        return request.playlists.contains { selected in
+            libraries[selected.service]?.playlists.contains { $0.id == selected.playlistID && CatalogMatcher.normalized($0.name) == CatalogMatcher.normalized(list.name) } == true
+        }
     }
 
     mutating func planLibrary(from service: MusicService) {
@@ -265,7 +325,7 @@ private struct PlanBuilder {
             let groups = Dictionary(grouping: lists, by: \.id)
             for id in groups.keys.sorted() where id.isEmpty || groups[id]!.count != 1 {
                 pairs.reserve(id, service: service); pairs.unambiguous = false
-                issue("playlist-id:\(service.rawValue):\(id)", "Identidad de playlist ambigua", "Hay playlists sin ID o con el mismo ID en el inventario.", service)
+                if relatedPlaylist(id, service: service) { issue("playlist-id:\(service.rawValue):\(id)", "Identidad de playlist ambigua", "Hay playlists sin ID o con el mismo ID en el inventario.", service) }
             }
         }
         // Reserve even broken or stale links so neither endpoint can be treated
@@ -279,8 +339,9 @@ private struct PlanBuilder {
                 pairs.link(link.spotifyID, link.appleMusicID)
             } else {
                 pairs.unambiguous = false
-                issue("link:\(link.spotifyID):\(link.appleMusicID)", "Vínculo manual pendiente",
-                      "El vínculo de playlists no es uno a uno o falta uno de sus extremos. Se preservan ambos IDs.")
+                if relatedPlaylist(link.spotifyID, service: .spotify) || relatedPlaylist(link.appleMusicID, service: .appleMusic) {
+                    issue("link:\(link.spotifyID):\(link.appleMusicID)", "Vínculo manual pendiente", "El vínculo de playlists no es uno a uno o falta uno de sus extremos. Se preservan ambos IDs.")
+                }
             }
         }
         let spNames = Dictionary(grouping: spotify.playlists, by: { CatalogMatcher.normalized($0.name) })
@@ -292,8 +353,9 @@ private struct PlanBuilder {
                 if !unlinked.isEmpty {
                     pairs.unambiguous = false
                     for list in unlinked { pairs.reserve(list.id, service: service) }
-                    issue("duplicate-name:\(service.rawValue):\(name)", "Playlists que necesitan un vínculo manual",
-                          "El nombre «\(names[name]![0].name)» está vacío o se repite; no identifica una playlist única.", service)
+                    if unlinked.contains(where: { relatedPlaylist($0.id, service: service) }) {
+                        issue("duplicate-name:\(service.rawValue):\(name)", "Playlists que necesitan un vínculo manual", "El nombre «\(names[name]![0].name)» está vacío o se repite; no identifica una playlist única.", service)
+                    }
                 }
             }
         }
@@ -311,8 +373,9 @@ private struct PlanBuilder {
                 pairs.reserve(list.id, service: .spotify)
                 for target in targets { pairs.reserve(target.id, service: .appleMusic) }
                 pairs.unambiguous = false
-                issue("same-name:\(list.id)", "Confirmá el vínculo entre playlists",
-                      "«\(list.name)» existe en ambos servicios, pero el nombre no prueba identidad: el contenido difiere o está incompleto. No se duplica ni se elimina ninguna posible pareja.")
+                if relatedPlaylist(list.id, service: .spotify) || targets.contains(where: { relatedPlaylist($0.id, service: .appleMusic) }) {
+                    issue("same-name:\(list.id)", "Confirmá el vínculo entre playlists", "«\(list.name)» existe en ambos servicios, pero el nombre no prueba identidad: el contenido difiere o está incompleto. No se duplica ni se elimina ninguna posible pareja.")
+                }
             }
         }
         // A duplicate name or a broken explicit link may have reserved only one
@@ -325,8 +388,9 @@ private struct PlanBuilder {
                 for list in unlinkedSpotify { pairs.reserve(list.id, service: .spotify) }
                 for list in unlinkedApple { pairs.reserve(list.id, service: .appleMusic) }
                 pairs.unambiguous = false
-                issue("unlinked-name:\(name)", "Nombre de playlist sin identidad confirmada",
-                      "Las playlists llamadas «\((spNames[name] ?? amNames[name])![0].name)» necesitan vínculos manuales para evitar duplicados.")
+                if unlinkedSpotify.contains(where: { relatedPlaylist($0.id, service: .spotify) }) || unlinkedApple.contains(where: { relatedPlaylist($0.id, service: .appleMusic) }) {
+                    issue("unlinked-name:\(name)", "Nombre de playlist sin identidad confirmada", "Las playlists llamadas «\((spNames[name] ?? amNames[name])![0].name)» necesitan vínculos manuales para evitar duplicados.")
+                }
             }
         }
         // The same occurrences with a different name or order are a potential
@@ -342,8 +406,9 @@ private struct PlanBuilder {
                 pairs.reserve(list.id, service: .spotify)
                 for target in possible { pairs.reserve(target.id, service: .appleMusic) }
                 pairs.unambiguous = false
-                issue("renamed-pair:\(list.id)", "Posible playlist renombrada",
-                      "«\(list.name)» tiene las mismas canciones y repeticiones que una playlist con otro nombre, posiblemente en otro orden. Elegí un vínculo manual antes de crear o quitar playlists.")
+                if relatedPlaylist(list.id, service: .spotify) || possible.contains(where: { relatedPlaylist($0.id, service: .appleMusic) }) {
+                    issue("renamed-pair:\(list.id)", "Posible playlist renombrada", "«\(list.name)» tiene las mismas canciones y repeticiones que una playlist con otro nombre, posiblemente en otro orden. Elegí un vínculo manual antes de crear o quitar playlists.")
+                }
             }
         }
         return pairs
@@ -352,22 +417,32 @@ private struct PlanBuilder {
     mutating func planPlaylists(from service: MusicService, pairs: PlaylistPairs) {
         let source = libraries[service]!, destination = libraries[service.other]!
         for list in source.playlists {
-            if let targetID = pairs.target(for: list.id, from: service), let target = destination.playlists.first(where: { $0.id == targetID }) {
+            guard inScope(list.id, service: service, pairs: pairs) else { continue }
+            planningSource = PlaylistReference(service: service, playlistID: list.id)
+            let copy = request?.options.existingPlaylist == .copy
+            let copyTarget = request?.copyTargets.first { $0.source == planningSource }?.targetID
+            let targetID = copy ? copyTarget : pairs.target(for: list.id, from: service)
+            if let targetID, let target = destination.playlists.first(where: { $0.id == targetID }) {
                 planLinked(list, target: target, from: service)
-            } else if !pairs.reserved[service, default: []].contains(list.id) {
+            } else if copyTarget != nil {
+                issue("copy-missing:\(list.id)", "Copia pendiente", "No se encontró la copia vinculada. Revisá el destino; no se creará otra automáticamente.", service.other)
+            } else if copy || !pairs.reserved[service, default: []].contains(list.id) {
                 let translated = mapped(list, from: service)
-                let complete = translated.count == list.tracks.count && list.contentsComplete
+                let complete = list.tracks.allSatisfy { track($0, from: service) != nil } && list.contentsComplete
                 if !complete {
                     issue("partial-create:\(service.rawValue):\(list.id)", "Playlist con canciones pendientes",
                           "«\(list.name)» sólo puede incluir las canciones confirmadas; las demás quedan pendientes.", service.other)
                 }
                 guard !translated.isEmpty || (list.tracks.isEmpty && list.contentsComplete) else { continue }
-                append(SyncOperation(service: service.other, kind: .createPlaylist, title: "Crear «\(list.name)»",
-                                     playlistName: list.name, playlistDescription: list.description, tracks: translated,
+                let name = list.name + (copy ? " (copia)" : "")
+                append(SyncOperation(service: service.other, kind: .createPlaylist, title: "Crear «\(name)»",
+                                     playlistName: name, playlistDescription: list.description, tracks: translated,
                                      blockedReason: destination.coverage.playlists ? nil : "No se conoce todo el inventario de destino; la playlist podría existir."))
             }
         }
-        guard mode != .merge else { return }
+        planningSource = nil
+        // An explicit selection never grants deletion rights over other playlists.
+        guard mode != .merge, request == nil else { return }
         let sourceMatchesComplete = source.playlists.allSatisfy { list in
             list.contentsComplete && list.tracks.allSatisfy { track($0, from: service) != nil }
         }
@@ -385,13 +460,22 @@ private struct PlanBuilder {
     mutating func planLinked(_ source: Playlist, target: Playlist, from service: MusicService) {
         // A deterministic metadata authority prevents two-way merge from swapping
         // conflicting names/descriptions on every run. Track merge remains symmetric.
-        if (mode != .merge || service == .spotify), (source.name != target.name || source.description != target.description) {
+        let desiredName = source.name + (request?.options.existingPlaylist == .copy ? " (copia)" : "")
+        if (mode != .merge || service == .spotify), (desiredName != target.name || source.description != target.description) {
             append(SyncOperation(service: service.other, kind: .renamePlaylist, targetID: target.id,
-                                 title: "Actualizar «\(target.name)»", playlistName: source.name, playlistDescription: source.description), playlist: target)
+                                 title: "Actualizar «\(target.name)»", playlistName: desiredName, playlistDescription: source.description), playlist: target)
         }
-        let translated = mapped(source, from: service)
+        var translated = mapped(source, from: service)
+        if request?.options.keepOrder == false, mode != .merge {
+            var remaining = translated
+            var ordered: [Track] = []
+            for current in target.tracks {
+                if let index = remaining.firstIndex(where: { $0.playableID == current.playableID }) { ordered.append(remaining.remove(at: index)) }
+            }
+            translated = ordered + remaining
+        }
         let desiredIDs = translated.map(\.playableID), currentIDs = target.tracks.map(\.playableID)
-        let allMapped = translated.count == source.tracks.count
+        let allMapped = source.tracks.allSatisfy { track($0, from: service) != nil }
         let additions = missingOccurrences(translated, existing: target.tracks)
         if mode == .merge {
             if !additions.isEmpty {
@@ -471,9 +555,9 @@ private func uniqueAlbums(_ albums: [Album]) -> [Album] {
 }
 
 private func sameTrackMetadata(_ left: Track, _ right: Track) -> Bool {
-    var left = left, right = right
-    left.id = ""; right.id = ""; left.catalogID = nil; right.catalogID = nil
-    return left == right
+    left.title == right.title && left.artist == right.artist && left.albumTitle == right.albumTitle &&
+    left.durationMS == right.durationMS && left.isrc == right.isrc && left.explicit == right.explicit &&
+    left.available == right.available && left.isLocal == right.isLocal
 }
 
 private func sameAlbumMetadata(_ left: Album, _ right: Album) -> Bool {

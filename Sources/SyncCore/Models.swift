@@ -31,6 +31,13 @@ public struct Track: Codable, Hashable, Sendable, Identifiable {
     public var explicit: Bool?
     public var available: Bool
     public var isLocal: Bool
+    public var url: String?
+    public var artistNames: [String]?
+    public var albumID: String?
+    public var releaseDate: String?
+    public var discNumber: Int?
+    public var trackNumber: Int?
+    public var artworkURL: String?
     public init(id: String, catalogID: String? = nil, title: String, artist: String, albumTitle: String = "", durationMS: Int = 0, isrc: String? = nil, explicit: Bool? = nil, available: Bool = true, isLocal: Bool = false) {
         self.id = id; self.catalogID = catalogID; self.title = title; self.artist = artist
         self.albumTitle = albumTitle; self.durationMS = durationMS; self.isrc = isrc
@@ -48,6 +55,7 @@ public struct Album: Codable, Hashable, Sendable, Identifiable {
     public var tracks: [Track]
     public var isCompleteAlbum: Bool
     public var available: Bool
+    public var artworkURL: String?
     public init(id: String, catalogID: String? = nil, title: String, artist: String, upc: String? = nil, tracks: [Track] = [], isCompleteAlbum: Bool = true, available: Bool = true) {
         self.id = id; self.catalogID = catalogID; self.title = title; self.artist = artist
         self.upc = upc; self.tracks = tracks; self.isCompleteAlbum = isCompleteAlbum; self.available = available
@@ -66,6 +74,7 @@ public struct Playlist: Codable, Equatable, Sendable, Identifiable {
     public var ownership: PlaylistOwnership
     public var contentsComplete: Bool
     public var version: String?
+    public var artworkURL: String?
     public init(id: String, name: String, description: String = "", tracks: [Track] = [], editable: Bool = true, ownership: PlaylistOwnership = .owned, contentsComplete: Bool = true, version: String? = nil) {
         self.id = id; self.name = name; self.description = description; self.tracks = tracks
         self.editable = editable; self.ownership = ownership; self.contentsComplete = contentsComplete; self.version = version
@@ -109,6 +118,8 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable, Identifiable {
         stable.id = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
         stable.fetchedAt = Date(timeIntervalSince1970: 0)
         stable.playlists.sort { $0.id < $1.id }
+        // Artwork is presentation metadata and may rotate independently of music.
+        for index in stable.playlists.indices { stable.playlists[index].artworkURL = nil }
         stable.savedTracks.sort { $0.id < $1.id }
         stable.savedAlbums.sort { $0.id < $1.id }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
@@ -167,6 +178,7 @@ public struct SyncOperation: Codable, Equatable, Sendable, Identifiable {
     public var albums: [Album]
     public var beforeTrackIDs: [String]?
     public var blockedReason: String?
+    public var sourcePlaylist: PlaylistReference?
     public init(id: UUID = UUID(), service: MusicService, kind: OperationKind, targetID: String? = nil, title: String, detail: String = "", playlistName: String? = nil, playlistDescription: String? = nil, tracks: [Track] = [], albums: [Album] = [], beforeTrackIDs: [String]? = nil, blockedReason: String? = nil) {
         self.id = id; self.service = service; self.kind = kind; self.targetID = targetID; self.title = title
         self.detail = detail; self.playlistName = playlistName; self.playlistDescription = playlistDescription
@@ -184,6 +196,10 @@ public struct TrackMatch: Codable, Equatable, Sendable, Identifiable {
     public var reason: String
     public var searchCoverage: CatalogSearchCoverage?
     public var manualSelection: Bool?
+    public var decision: TrackDecision?
+    public var searchNotes: [String]?
+    public var searchStages: [SearchStage]?
+    public var rejectedCandidateIDs: [String]?
     public var id: String { "\(sourceService.rawValue):\(source.id)" }
     public init(sourceService: MusicService, source: Track, candidates: [Track] = [], selected: Track? = nil, confidence: MatchConfidence = .review, reason: String = "") {
         self.sourceService = sourceService; self.source = source; self.candidates = candidates
@@ -238,8 +254,11 @@ public struct SyncPlan: Codable, Equatable, Sendable, Identifiable {
     public var snapshots: [LibrarySnapshot]
     public var operations: [SyncOperation]
     public var issues: [PlanIssue]
-    public init(id: UUID = UUID(), createdAt: Date = Date(), mode: SyncMode, snapshots: [LibrarySnapshot], operations: [SyncOperation], issues: [PlanIssue] = []) {
+    public var request: SyncRequest?
+    public var undoOfRunID: UUID?
+    public init(id: UUID = UUID(), createdAt: Date = Date(), mode: SyncMode, snapshots: [LibrarySnapshot], operations: [SyncOperation], issues: [PlanIssue] = [], request: SyncRequest? = nil) {
         self.id = id; self.createdAt = createdAt; self.mode = mode; self.snapshots = snapshots; self.operations = operations; self.issues = issues
+        self.request = request
     }
     public var executable: [SyncOperation] { operations.filter { $0.blockedReason == nil } }
 }
@@ -257,7 +276,7 @@ public enum ProviderError: Error, LocalizedError, Sendable {
     /// invalid JSON, transport errors and an absent readback do not qualify.
     public var definitelyNotApplied: Bool {
         switch self {
-        case .notConnected, .unauthorized, .forbidden, .rateLimited, .unsupported, .rejectedWrite: return true
+        case .notConnected, .unauthorized, .forbidden, .rateLimited, .quotaExceeded, .unsupported, .rejectedWrite: return true
         default: return false
         }
     }
@@ -281,6 +300,9 @@ public protocol MusicProvider: Sendable {
     func fetchLibrary() async throws -> LibrarySnapshot
     func searchTracks(matching track: Track) async throws -> CatalogSearchResult<Track>
     func searchAlbums(matching album: Album) async throws -> CatalogSearchResult<Album>
+    func searchCatalog(_ query: TrackSearchQuery) async throws -> TrackSearchResult
+    func searchCatalog(_ query: TrackSearchQuery, budget: CatalogRequestBudget) async throws -> TrackSearchResult
+    func catalogTrack(id: String) async throws -> Track?
     func perform(_ operation: SyncOperation) async throws -> MutationReceipt
 }
 

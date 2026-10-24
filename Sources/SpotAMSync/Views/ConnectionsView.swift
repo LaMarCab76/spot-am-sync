@@ -35,7 +35,7 @@ struct ConnectionsView: View {
                                     .onChange(of: clientIDDraft) { _, _ in didSave = false }
                                 Button("Guardar") {
                                     model.spotifyClientID = cleanClientID
-                                    UserDefaults.standard.set(cleanClientID, forKey: "spotifyClientID")
+                                    model.saveSpotifyClientID(cleanClientID)
                                     clientIDDraft = cleanClientID
                                     didSave = true
                                 }.disabled(cleanClientID.isEmpty || !hasUnsavedID).controlSize(.large)

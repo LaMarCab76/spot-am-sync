@@ -181,6 +181,7 @@ struct CollectedPage: Sendable {
         if limited && !failed { return .limited }
         return items.isEmpty ? .failed : .partialFailure
     }
+    var failure: ProviderError?
 }
 
 /// Collects every page, preserves already-read data on failure, and distinguishes
@@ -242,6 +243,7 @@ func collectPages(origin: APIOrigin, path: String, initial: JSONValue? = nil,
     catch {
         output.complete = false
         output.failed = true
+        output.failure = error as? ProviderError
         output.notes.append((error as? ProviderError)?.errorDescription ?? "Lectura incompleta.")
     }
     return output

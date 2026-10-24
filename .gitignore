@@ -10,3 +10,11 @@ build/
 .env
 .env.*
 !.env.example
+
+# Ignore generated files from previous Electron checkouts as well
+node_modules/
+out/
+dist/
+*.log
+.vite/
+coverage/

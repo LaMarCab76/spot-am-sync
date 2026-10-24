@@ -4,10 +4,10 @@ import SyncCore
 
 final class CatalogSearchTests: XCTestCase {
     private func source(isrc: String? = "TEST") -> Track {
-        Track(id: "source", title: "Song", artist: "Artist", albumTitle: "Album", durationMS: 120000, isrc: isrc)
+        Track(id: "source", title: "Song", artist: "Artist", albumTitle: "Album", durationMS: 120000, isrc: isrc, explicit: false)
     }
     private func candidate(_ id: String) -> [String: Any] {
-        ["id": id, "type": "songs", "attributes": ["name": "Song", "artistName": "Artist", "albumName": "Album", "durationInMillis": 120000, "isrc": "TEST", "playParams": ["id": id]]]
+        ["id": id, "type": "songs", "attributes": ["name": "Song", "artistName": "Artist", "albumName": "Album", "durationInMillis": 120000, "isrc": "TEST", "contentRating": "clean", "playParams": ["id": id]]]
     }
     private var emptyAppleSearch: ScriptedTransport.Step {
         .init("/v1/catalog/ar/search", json: ["results": ["songs": ["data": []]]])
@@ -47,7 +47,7 @@ final class CatalogSearchTests: XCTestCase {
         await t.assertExhausted()
     }
     func testSpotifyEmptyISRCFallsBackToMetadata() async throws {
-        var track = spTrack("one", isrc: "TEST"); track["name"] = "Song"
+        var track = spTrack("one", isrc: "TEST"); track["name"] = "Song"; track["explicit"] = false
         let t = ScriptedTransport([spotifyMe, .init("/v1/search", json: ["tracks": spPage()], validate: { XCTAssertEqual(query($0, "q"), "isrc:TEST") }),
             .init("/v1/search", json: ["tracks": spPage([track])], validate: { XCTAssertEqual(query($0, "q"), "track:Song artist:Artist album:Album") })])
         let p = try await spotify(t), result = try await p.searchTracks(matching: source())

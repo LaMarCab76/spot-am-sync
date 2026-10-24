@@ -38,6 +38,7 @@ public struct OperationExecution: Codable, Equatable, Sendable, Identifiable {
     public var receipt: MutationReceipt?
     public var error: String?
     public var parentOperationID: UUID?
+    public var createdByOperationID: UUID?
     public var creationDependencyID: UUID?
     /// Used only by RunRecord's compact wire format; decoded records restore `before`.
     var beforeSnapshotID: UUID?

@@ -130,7 +130,7 @@ struct PlaylistsView: View {
                         Image(systemName: "music.note.list").font(.system(size: 18)).foregroundStyle(service == .spotify ? SyncStyle.green : SyncStyle.coral)
                             .frame(width: 32)
                         VStack(alignment: .leading, spacing: 5) {
-                            Text(playlist.name).font(.callout.weight(.semibold))
+                            Button(playlist.name) { model.showPlaylist(playlist, service: service) }.buttonStyle(.plain).font(.callout.weight(.semibold))
                             Text("\(playlist.tracks.count) canciones · \(ownership(playlist.ownership))").font(.caption).foregroundStyle(.secondary)
                             if !playlist.contentsComplete {
                                 Label("Contenido incompleto", systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(SyncStyle.coral)

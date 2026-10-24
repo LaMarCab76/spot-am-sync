@@ -1,5 +1,19 @@
 # Validación local
 
+## Integración con main — 24 de octubre de 2026
+
+Se integraron las correcciones locales con `44f38ac`, que contiene la interfaz SwiftUI, el comparador por etapas, la sincronización por playlist y las propuestas programadas con confirmación. Se conservan ambas líneas de trabajo mediante un merge normal.
+
+- `bash scripts/test.sh`: **287 pruebas aprobadas**, sin fallos: 180 de SyncCore, 85 de MusicProviders y 22 de SpotAMSync.
+- Se mantienen las regresiones de ambas ramas. Los adaptadores de prueba declaran los límites HTTP cuando corresponde y generan una identidad nueva por instantánea, igual que los inventarios reales.
+- Cuatro regresiones adicionales cubren: presupuesto compartido entre todas las etapas y expansiones de catálogo; conservación de candidatos ante HTTP 401 sin iniciar otras etapas; decisiones manuales del formato anterior con cobertura incompleta; reanudación de una adición con el campo histórico `createdByOperationID` sin duplicar la creación.
+- La cobertura antigua `partial` sigue siendo legible. Las búsquedas nuevas distinguen límites y fallos parciales. Las dependencias de creación de ambos formatos y las instantáneas antiguas en línea siguen siendo legibles.
+- `bash scripts/build-app.sh`: paquete de producción 0.2.0 generado e instalado en `/Applications/SpotAM Sync.app`. La firma ad hoc pasó `codesign --verify --deep --strict`; el SHA-256 del ejecutable instalado coincide con el del paquete compilado.
+- Apertura de la copia instalada verificada con `SPOTAM_DATA_DIR` temporal y `--demo`: inicio SwiftUI visible, navegación a **Agregar a Apple Music** y carga del checklist de ejemplo. Se cerró la sesión después; los archivos habituales conservaron nombres, tamaños y fechas de modificación.
+- `git diff --check`: correcto. No se conectaron cuentas reales durante esta verificación.
+
+Las pruebas usan cuentas, transportes y almacenamiento temporales. No acreditan acceso real a MusicKit ni escrituras en bibliotecas personales.
+
 ## Correcciones de sincronización — 24 de octubre de 2026
 
 Validación ejecutada en el checkout local después de corregir recuperación, descubrimiento de catálogo y vínculos de playlists.
@@ -32,7 +46,7 @@ Entorno: Mac Apple Silicon, macOS 27.0.1, Xcode 27.1, Swift 6.4 en modo de lengu
 
 ### Pruebas y compilación
 
-- `bash scripts/test.sh`: **152 pruebas aprobadas**, sin fallos —94 de SyncCore y 58 de MusicProviders—.
+- `bash scripts/test.sh`: **221 pruebas aprobadas**, sin fallos —143 de SyncCore, 66 de MusicProviders y 12 del modelo de la app—.
 - `bash scripts/build-app.sh`: compilación de producción y empaquetado correctos.
 - `codesign --verify --deep --strict 'build/SpotAM Sync.app'`: correcto.
 - Firma local **ad hoc**, sin TeamIdentifier. No es una distribución notarizada ni habilita la integración de producción con MusicKit.
@@ -40,7 +54,18 @@ Entorno: Mac Apple Silicon, macOS 27.0.1, Xcode 27.1, Swift 6.4 en modo de lengu
 
 Las pruebas usan transportes y proveedores controlados. Cubren paginación, permisos, identidad, coincidencias ambiguas, orden y duplicados, álbumes parciales, inventarios incompletos, revocación de aprobaciones, cancelación antes del envío, errores después de escrituras, recuperación entre ejecuciones y continuidad de la autorización Apple.
 
-### Comprobación de la app nativa
+La ampliación de búsqueda y recuperación agrega cobertura para:
+
+- ISRC vacío y ampliación por artista/álbum/título; un mismo ISRC en otro álbum exige elección manual.
+- Referencias adicionales en `meta.filters.isrc` de Apple y referencias que no se pueden completar.
+- Filtros combinados y paginación acotada de Spotify, caché de resultados completos y espera tras HTTP 429 en ambos proveedores.
+- Cobertura limitada sin candidatos, fallos de consulta y metadatos desconocidos sin convertirlos en coincidencia automática ni ausencia confirmada.
+- Elecciones, pendientes, omitidas y descartes; revalidación de identidad y compatibilidad con estados anteriores.
+- Referencias públicas con namespace `itunes:`, país obligatorio y ausencia de credenciales en esas solicitudes.
+- Persistencia del checklist, separación de cuentas, cancelación que descarta respuestas tardías y demo sin red ni sobrescritura del estado real.
+- Lotes grandes con éxito parcial seguido de 403, creación de playlist con ID durable, append incierto y reemplazos que conservan orden y repeticiones.
+
+## Comprobación de la app nativa
 
 Verificado mediante interacción con la app compilada:
 
@@ -58,7 +83,17 @@ Verificado mediante interacción con la app compilada:
 
 La simulación fue demasiado breve para capturar un estado intermedio estable del indicador de progreso con la herramienta de accesibilidad; se comprobaron sus conteos y resultado final. Los estados de avance y cancelación del motor están cubiertos por pruebas automatizadas.
 
-### Pendiente con servicios reales
+### Comparadores de canciones
+
+En esta ampliación se abrió el build de producción con `SPOTAM_DATA_DIR` temporal y se cargó la demostración desde la interfaz. Se verificó visualmente:
+
+- Comparador oficial: apertura, búsqueda sin cerrar la ventana, descarte, restauración, elección y actualización de la etiqueta de elección manual.
+- Comparador XML: edición de términos, búsqueda sólo por artista, opciones de distintos álbumes, comparación de metadatos, elección y referencia guardada en la fila.
+- La elección XML no cambia el conteo de marcas ni la evidencia de presencia. Los dos flujos advierten que otra edición requiere elección y que elegir no escribe en el servicio.
+
+La prueba visual detectó y permitió corregir una navegación que cerraba el comparador al iniciar una búsqueda. La suite completa y el build de producción se ejecutaron nuevamente después de la corrección. Las consultas autenticadas a los catálogos y las escrituras reales siguen pendientes de aceptación con cuentas de prueba; los contratos HTTP se validaron con transportes controlados.
+
+## Pendiente con servicios reales
 
 - Spotify: introducir el Client ID público de la app registrada, verificar el redirect URI, autorizar una cuenta habilitada y probar primero contenido destinado a pruebas.
 - Apple Music: disponer de la firma y el App ID del Apple Developer Program con MusicKit habilitado; autorizar y verificar el acceso efectivo a la biblioteca.

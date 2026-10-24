@@ -26,6 +26,7 @@ struct ManualChecklistView: View {
     @EnvironmentObject private var model: AppModel
     @ViewState private var search = ""
     @ViewState private var filter: ManualChecklistFilter = .missing
+    @ViewState private var reviewing: ManualChecklistItem?
 
     var body: some View {
         ScrollView {
@@ -51,6 +52,21 @@ struct ManualChecklistView: View {
                 }
             }
             .padding(28)
+        }
+        .sheet(item: $reviewing) { item in
+            let result = manual.candidateResults[item.id]
+            let choice = manual.choices[item.id]
+            let rejected = Set(choice?.rejectedIDs ?? [])
+            TrackCandidateReview(source: item.track, service: .appleMusic,
+                                 candidates: (result?.candidates ?? item.candidates).filter { !rejected.contains($0.id) },
+                                 selected: choice?.selected, notes: result?.notes ?? ["Buscá para ampliar las coincidencias del XML. Las opciones online son referencias para elegir; no confirman presencia."],
+                                 busy: model.isBusy, publicSearch: model.accounts[.appleMusic] == nil,
+                                 search: { model.searchManualTrack(itemID: item.id, query: $0) },
+                                 choose: { manual.choose(itemID: item.id, candidate: $0) },
+                                 reject: { manual.rejectCandidate(itemID: item.id, candidate: $0) },
+                                 pending: { manual.choose(itemID: item.id, candidate: nil, decision: .pending) },
+                                 omit: { manual.choose(itemID: item.id, candidate: nil, decision: .omitted) },
+                                 restore: { manual.restoreCandidates(itemID: item.id) }, cancel: { manual.cancel() })
         }
     }
 
@@ -237,9 +253,11 @@ struct ManualChecklistView: View {
                 LazyVStack(spacing: 12) {
                     ForEach(items) { item in
                         ManualChecklistRow(item: item, marked: manual.markedIDs.contains(item.id),
+                                           choice: manual.choices[item.id],
                                            canMark: manual.isHydrated && !manual.isBusy && !model.isBusy,
                                            mark: { manual.setMarked(itemID: item.id, marked: $0, scopeID: report.scopeID) },
-                                           search: { manual.searchInAppleMusic(item.track) })
+                                           search: { manual.searchInAppleMusic(manual.choices[item.id]?.selected ?? item.track) },
+                                           review: { reviewing = item })
                     }
                 }
             }
@@ -288,9 +306,11 @@ struct ManualChecklistView: View {
 private struct ManualChecklistRow: View {
     let item: ManualChecklistItem
     let marked: Bool
+    let choice: ManualTrackChoice?
     let canMark: Bool
     let mark: (Bool) -> Void
     let search: () -> Void
+    let review: () -> Void
 
     var body: some View {
         SurfaceCard {
@@ -305,6 +325,15 @@ private struct ManualChecklistRow: View {
                                color: item.evidence == .review && !marked ? SyncStyle.coral : SyncStyle.green)
                 }
                 ManualChecklistTrackMetadata(track: item.track)
+                if let selected = choice?.selected {
+                    Text("Elegida por vos: \(selected.title) · \(selected.artist) · \(selected.albumTitle)")
+                        .font(.callout).foregroundStyle(SyncStyle.green).fixedSize(horizontal: false, vertical: true)
+                    Text(choice?.origin == .xml ? "Equivalencia elegida en el XML. La elección se conserva separada de la verificación automática."
+                         : "Referencia online guardada. No confirma disponibilidad actual ni presencia en el XML.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if choice?.decision == .omitted {
+                    Text("Omitida por vos. Podés volver a elegir un equivalente.").font(.caption).foregroundStyle(.secondary)
+                }
                 if !item.reason.isEmpty {
                     Text(item.reason).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
@@ -351,6 +380,7 @@ private struct ManualChecklistRow: View {
             .controlSize(.small)
             .accessibilityLabel("Buscar en Apple Music: \(item.track.title), \(item.track.artist)")
             .help("Abre una búsqueda de título, artista y álbum en music.apple.com.")
+        Button("Elegir equivalente", systemImage: "arrow.triangle.branch", action: review).disabled(!canMark)
     }
 
     private var statusTitle: String {

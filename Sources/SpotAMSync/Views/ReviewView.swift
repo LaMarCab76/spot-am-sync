@@ -42,7 +42,11 @@ struct ReviewView: View {
                             PageHeading(eyebrow: "La decisión es tuya", title: "Revisá cada cambio", subtitle: "Marcá lo que querés aplicar. Las operaciones bloqueadas quedan fuera de la selección.")
                             Button { navigate(.matches) } label: { Label("Coincidencias", systemImage: "arrow.triangle.branch") }.padding(.top, 25)
                         }
-                        ModeSelectionView(compact: true)
+                        if let request = plan.request {
+                            Notice(title: request.name, message: "\(request.mode.title) · \(request.playlists.count) playlists seleccionadas. Las canciones y álbumes guardados están \(request.includeSavedLibrary ? "incluidos" : "fuera de este alcance").", symbol: "scope")
+                        } else if plan.undoOfRunID != nil {
+                            Notice(title: "Propuesta para deshacer", message: "Solo se incluyen operaciones inversas compatibles con el estado comprobado. Revisá también las operaciones bloqueadas.", symbol: "arrow.uturn.backward")
+                        } else { ModeSelectionView(compact: true) }
                         if !plan.snapshots.allSatisfy(\.complete) {
                             Notice(title: "Falta completar la lectura", message: "Podés revisar las diferencias conocidas. Para aplicar cambios necesitamos un inventario completo de ambas bibliotecas y un respaldo verificable. Volvé a analizar cuando se resuelvan los errores de lectura.", symbol: "exclamationmark.shield", color: SyncStyle.coral)
                         }
@@ -97,6 +101,8 @@ struct ReviewView: View {
             }
         }
         .sheet(item: $approval) { request in ApprovalSheet(request: request) }
+        .onChange(of: approval?.id) { _, value in model.holdsAutomaticPreparation = value != nil }
+        .onDisappear { model.holdsAutomaticPreparation = false }
     }
 
     private var filterBar: some View {

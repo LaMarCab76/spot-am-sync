@@ -75,7 +75,8 @@ final class ExecutorTests: XCTestCase {
         let result = try await executor.execute(plan: plan, selectedIDs: [operation.id], decisions: decisions, providers: [.spotify: spotify, .appleMusic: apple])
         XCTAssertEqual(result.executions[0].state, .verified)
         XCTAssertEqual(result.executions[0].receipt?.createdID, "created-1")
-        let count = await apple.writeCount(); XCTAssertEqual(count, 1)
+        let count = await apple.writeCount(); XCTAssertEqual(count, 2, "Creation and append are individually journaled, without duplicates")
+        XCTAssertEqual(result.executions[1].state, .verified)
         let saved = try await storage.load(id: result.id)
         XCTAssertEqual(saved?.executions[0].state, .verified)
     }

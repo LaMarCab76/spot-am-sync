@@ -3,6 +3,7 @@ import Combine
 import Foundation
 import UniformTypeIdentifiers
 import SyncCore
+import MusicProviders
 
 @MainActor
 final class ManualChecklistModel: ObservableObject {
@@ -16,6 +17,11 @@ final class ManualChecklistModel: ObservableObject {
     @Published private(set) var statusText = "Cargando el checklist guardado…"
     @Published private(set) var errorMessage: String?
     @Published private(set) var hasUnsavedChanges = false
+    @Published private(set) var choices: [String: ManualTrackChoice] = [:]
+    @Published private(set) var candidateResults: [String: TrackSearchResult] = [:]
+    @Published private(set) var catalogOrigins: [String: ManualCandidateOrigin] = [:]
+    private var demoChoices: [String: [String: ManualTrackChoice]] = [:]
+    private let publicSearch = ITunesCatalogSearch()
 
     private var store: ManualChecklistStore?
     private var realState = ManualChecklistState()
@@ -23,8 +29,10 @@ final class ManualChecklistModel: ObservableObject {
     private var demoMarks: [String: Set<String>] = [:]
     private var workTask: Task<Void, Never>?
     private var importPanel: NSOpenPanel?
+    private let storageDirectory: URL?
 
-    init() {
+    init(storageDirectory: URL? = nil) {
+        self.storageDirectory = storageDirectory
         restoreSavedState()
     }
 
@@ -38,7 +46,8 @@ final class ManualChecklistModel: ObservableObject {
             do {
                 if store == nil {
                     let base: URL
-                    if let override = ProcessInfo.processInfo.environment["SPOTAM_DATA_DIR"], !override.isEmpty {
+                    if let storageDirectory { base = storageDirectory }
+                    else if let override = ProcessInfo.processInfo.environment["SPOTAM_DATA_DIR"], !override.isEmpty {
                         base = URL(fileURLWithPath: override, isDirectory: true)
                     } else {
                         base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
@@ -202,6 +211,7 @@ final class ManualChecklistModel: ObservableObject {
                 library = result.0
                 report = result.1
                 markedIDs = demoMarks[result.1.scopeID] ?? []
+                choices = demoChoices[result.1.scopeID] ?? [:]; candidateResults = [:]; catalogOrigins = [:]
                 statusText = "Demostración local. Las marcas del ejemplo duran durante esta sesión."
             } catch is CancellationError {
                 statusText = "Carga del ejemplo cancelada."
@@ -254,6 +264,83 @@ final class ManualChecklistModel: ObservableObject {
 
     func dismissError() { errorMessage = nil }
 
+    func searchCandidates(itemID: String, query: TrackSearchQuery,
+                          catalogSearch: (@Sendable (Track, TrackSearchQuery) async throws -> TrackSearchResult)? = nil) {
+        guard isHydrated, !isBusy, query.valid, let report, let library,
+              let item = report.items.first(where: { $0.id == itemID }) else { return }
+        let scope = report.scopeID, demo = isDemo
+        begin("Buscando alternativas por artista, álbum y canción…", cancellable: true)
+        workTask = Task {
+            defer { finish() }
+            do {
+                let local = library.tracks.filter { track in
+                    let artist = query.artist.isEmpty || CatalogMatcher.similar(query.artist, track.artist)
+                    let title = query.title.isEmpty || CatalogMatcher.similar(query.title, track.title)
+                    let album = !query.album.isEmpty && CatalogMatcher.similar(query.album, track.albumTitle)
+                    return artist && (title || album)
+                }
+                var result = TrackSearchResult(candidates: local, coverage: library.complete ? .complete : .partial,
+                                               notes: ["Los candidatos del XML corresponden a la exportación importada."])
+                var origin: ManualCandidateOrigin = .xml
+                if !demo {
+                    do {
+                        let online: TrackSearchResult
+                        if let catalogSearch { online = try await catalogSearch(item.track, query); origin = .catalog }
+                        else { online = try await publicSearch.search(query); origin = .itunes }
+                        result.candidates += online.candidates; result.notes += online.notes
+                        if online.coverage != .complete { result.coverage = online.coverage == .failed && !result.candidates.isEmpty ? .partial : online.coverage }
+                    } catch is CancellationError { throw CancellationError() }
+                    catch { result.coverage = .partial; result.notes.append("No se completó la búsqueda online: \(error.localizedDescription)") }
+                }
+                try Task.checkCancellation()
+                guard self.report?.scopeID == scope else { return }
+                result.candidates = CatalogMatcher.ranked(item.track, candidates: result.candidates)
+                let rejected = Set(choices[itemID]?.rejectedIDs ?? [])
+                result.candidates.removeAll { rejected.contains($0.id) }
+                candidateResults[itemID] = result; catalogOrigins[itemID] = origin
+                statusText = "Opciones disponibles. Elegir una no marca la canción como agregada ni presente."
+            } catch is CancellationError { statusText = "Búsqueda cancelada. Se conserva tu elección anterior." }
+            catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func choose(itemID: String, candidate: Track?, decision: TrackDecision = .manual) {
+        guard isHydrated, !isBusy, let report, let item = report.items.first(where: { $0.id == itemID }) else { return }
+        let known = (candidateResults[itemID]?.candidates ?? item.candidates)
+        if let candidate, !known.contains(candidate) { return }
+        let origin: ManualCandidateOrigin = candidate.map { value in
+            library?.tracks.contains(value) == true ? .xml : catalogOrigins[itemID] ?? .catalog
+        } ?? .xml
+        choices[itemID] = ManualTrackChoice(source: item.track, selected: candidate, origin: origin,
+                                           decision: candidate == nil ? decision : .manual, rejectedIDs: choices[itemID]?.rejectedIDs ?? [])
+        saveChoices(scopeID: report.scopeID)
+    }
+
+    func rejectCandidate(itemID: String, candidate: Track) {
+        guard isHydrated, !isBusy, let report, let item = report.items.first(where: { $0.id == itemID }) else { return }
+        var choice = choices[itemID] ?? ManualTrackChoice(source: item.track)
+        choice.rejectedIDs = Array(Set(choice.rejectedIDs + [candidate.id])).sorted()
+        if choice.selected?.id == candidate.id { choice.selected = nil; choice.decision = .pending }
+        choices[itemID] = choice
+        candidateResults[itemID]?.candidates.removeAll { $0.id == candidate.id }
+        saveChoices(scopeID: report.scopeID)
+    }
+
+    func restoreCandidates(itemID: String) {
+        guard !isBusy, let report else { return }
+        choices[itemID]?.rejectedIDs = []
+        candidateResults[itemID] = nil
+        saveChoices(scopeID: report.scopeID)
+    }
+
+    private func saveChoices(scopeID: String) {
+        if isDemo { demoChoices[scopeID] = choices; return }
+        if realState.choicesByScope == nil { realState.choicesByScope = [:] }
+        realState.choicesByScope?[scopeID] = choices
+        begin("Guardando equivalencia…", cancellable: false)
+        workTask = Task { defer { finish() }; _ = await persistRealState() }
+    }
+
     static func searchURL(for track: Track) -> URL? {
         var components = URLComponents()
         components.scheme = "https"
@@ -290,6 +377,14 @@ final class ManualChecklistModel: ObservableObject {
         library = realState.library
         report = realState.report
         markedIDs = realState.report.flatMap { realState.markedIDsByScope[$0.scopeID] } ?? []
+        candidateResults = [:]; catalogOrigins = [:]
+        choices = report.flatMap { realState.choicesByScope?[$0.scopeID] } ?? [:]
+        if let report, let library {
+            for item in report.items {
+                if let choice = choices[item.id] { choices[item.id] = choice.revalidated(source: item.track, library: library) }
+            }
+            if realState.choicesByScope != nil { realState.choicesByScope?[report.scopeID] = choices }
+        }
     }
 
     @discardableResult
