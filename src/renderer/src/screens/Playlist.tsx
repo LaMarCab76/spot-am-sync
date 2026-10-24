@@ -6,7 +6,7 @@ import { albumArt } from '../data/artwork'
 import { directionEnds, fmt, serviceName } from '../lib/format'
 import { Link } from '../router'
 import { useAppState, useDispatch } from '../store/StoreProvider'
-import { playlistById, playlistCounts } from '../store/selectors'
+import { playlistById, playlistCounts, trackState } from '../store/selectors'
 import type { Direction, TrackStatus } from '../store/types'
 import s from './Playlist.module.css'
 
@@ -40,7 +40,9 @@ export function Playlist({ id }: { id: string }) {
     { id: 'miss', label: 'No encontradas', count: counts.missing, color: '#a1a1aa' }
   ]
 
-  const tracks = playlist.tracks.map((t, i) => ({ ...t, n: i + 1 })).filter((t) => filter === 'all' || t.status === filter)
+  const tracks = playlist.tracks
+    .map((t, i) => ({ ...t, n: i + 1, state: trackState(state, playlist, t) }))
+    .filter((t) => filter === 'all' || t.state === filter)
   const lastSync = playlist.neverSynced ? 'Nunca sincronizada' : `Última sync: ${playlist.lastSync}`
 
   return (
@@ -163,12 +165,16 @@ export function Playlist({ id }: { id: string }) {
                         <span className={ui.muted} style={{ fontSize: 14 }}>
                           Sin comparar
                         </span>
-                      ) : t.status === 'ok' ? (
+                      ) : t.state === 'ok' ? (
                         <span className={ui.statusOk}>
                           <Icon name="checkCircle" size={18} strokeWidth={2.4} />
                           Coincide
                         </span>
-                      ) : t.status === 'rev' ? (
+                      ) : t.state === 'skipped' ? (
+                        <span className={ui.muted} style={{ fontSize: 14 }}>
+                          Omitida
+                        </span>
+                      ) : t.state === 'rev' ? (
                         <Link to={{ name: 'revisar' }} className={`${ui.statusPill} ${ui.statusRev}`} aria-label={`Revisar coincidencia de ${t.title}`}>
                           <Icon name="alert" size={18} strokeWidth={2.4} />
                           Revisar

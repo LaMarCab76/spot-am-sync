@@ -1,4 +1,4 @@
-import type { AppState, Playlist } from './types'
+import type { AppState, Playlist, Track, TrackStatus } from './types'
 
 export type PlaylistStatus = 'syncing' | 'paused' | 'synced' | 'pending' | 'never'
 
@@ -6,21 +6,37 @@ export interface PlaylistCounts {
   matched: number
   review: number
   missing: number
+  /** Songs the user chose to leave out in Revisar; they are neither matched nor pending. */
+  skipped: number
   pending: number
 }
 
-/** Counts after subtracting the songs already decided in Revisar. */
+/** Counts after applying the decisions already made in Revisar. */
 export function playlistCounts(state: AppState, playlist: Playlist): PlaylistCounts {
   let review = playlist.review
   let missing = playlist.missing
+  let skipped = 0
   for (const item of state.review) {
-    if (item.playlistId !== playlist.id || !state.resolutions[item.id]) continue
+    const resolution = item.playlistId === playlist.id ? state.resolutions[item.id] : undefined
+    if (!resolution) continue
     if (item.kind === 'rev') review -= 1
     else missing -= 1
+    if (resolution.kind === 'skipped') skipped += 1
   }
   review = Math.max(0, review)
   missing = Math.max(0, missing)
-  return { matched: playlist.total - review - missing, review, missing, pending: review + missing }
+  return { matched: playlist.total - review - missing - skipped, review, missing, skipped, pending: review + missing }
+}
+
+export type TrackState = TrackStatus | 'skipped'
+
+/** A track's status once its Revisar decision, if any, is applied. */
+export function trackState(state: AppState, playlist: Playlist, track: Track): TrackState {
+  if (track.status === 'ok') return 'ok'
+  const item = state.review.find((r) => r.playlistId === playlist.id && r.title === track.title && r.artist === track.artist)
+  const resolution = item ? state.resolutions[item.id] : undefined
+  if (!resolution) return track.status
+  return resolution.kind === 'used' ? 'ok' : 'skipped'
 }
 
 export function pendingTotal(state: AppState): number {
