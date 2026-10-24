@@ -10,6 +10,7 @@ public actor SyncStore {
     private let decoder = JSONDecoder()
 
     public init(url: URL) throws {
+        let existed = FileManager.default.fileExists(atPath: url.path)
         self.url = url
         encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let directory = url.deletingLastPathComponent()
@@ -20,18 +21,122 @@ public actor SyncStore {
             if let pointer { sqlite3_close(pointer) }
             throw SyncExecutionError.persistence(detail)
         }
+        guard let pointer else { throw SyncExecutionError.persistence("SQLite no devolvió una conexión.") }
         database = pointer
         sqlite3_busy_timeout(pointer, 5000)
-        for sql in ["PRAGMA journal_mode=WAL", "PRAGMA synchronous=FULL", "CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, started REAL NOT NULL, payload BLOB NOT NULL)", "CREATE TABLE IF NOT EXISTS decisions (account_pair TEXT PRIMARY KEY, payload BLOB NOT NULL)"] {
+        for sql in ["PRAGMA journal_mode=WAL", "PRAGMA synchronous=FULL"] {
             guard sqlite3_exec(pointer, sql, nil, nil, nil) == SQLITE_OK else {
                 let detail = String(cString: sqlite3_errmsg(pointer)); sqlite3_close(pointer); database = nil
                 throw SyncExecutionError.persistence(detail)
             }
         }
+        do { try Self.migrate(pointer, url: url, backup: existed) }
+        catch { sqlite3_close(pointer); database = nil; throw error }
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
     deinit { if let database { sqlite3_close(database) } }
+
+    private static func migrate(_ database: OpaquePointer, url: URL, backup: Bool) throws {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA user_version", -1, &statement, nil) == SQLITE_OK else {
+            throw SyncExecutionError.persistence("No se pudo leer la versión de los datos.")
+        }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { throw SyncExecutionError.persistence("Versión de datos ilegible.") }
+        let version = sqlite3_column_int(statement, 0)
+        guard version <= 1 else { throw SyncExecutionError.persistence("Esta biblioteca fue creada por una versión más nueva de la app.") }
+        guard version == 0 else { return }
+        if backup {
+            let destination = url.deletingLastPathComponent().appendingPathComponent("library-sync-before-workspace-\(UUID().uuidString).sqlite")
+            var copy: OpaquePointer?
+            guard sqlite3_open(destination.path, &copy) == SQLITE_OK, let copy else {
+                if let copy { sqlite3_close(copy) }
+                throw SyncExecutionError.persistence("No se pudo crear el respaldo previo a la migración.")
+            }
+            defer { sqlite3_close(copy) }
+            guard let handle = sqlite3_backup_init(copy, "main", database, "main") else {
+                throw SyncExecutionError.persistence("No se pudo iniciar el respaldo SQLite.")
+            }
+            let result = sqlite3_backup_step(handle, -1)
+            let finish = sqlite3_backup_finish(handle)
+            guard result == SQLITE_DONE, finish == SQLITE_OK else { throw SyncExecutionError.persistence("El respaldo SQLite no se completó.") }
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+        }
+        guard sqlite3_exec(database, "BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, started REAL NOT NULL, payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS decisions (account_pair TEXT PRIMARY KEY, payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS workspace (id INTEGER PRIMARY KEY CHECK(id=1), payload BLOB NOT NULL); PRAGMA user_version=1; COMMIT", nil, nil, nil) == SQLITE_OK else {
+            sqlite3_exec(database, "ROLLBACK", nil, nil, nil)
+            throw SyncExecutionError.persistence("No se pudo completar la migración de configuraciones.")
+        }
+    }
+
+    public func loadWorkspace() throws -> SyncWorkspace {
+        let statement = try prepare("SELECT payload FROM workspace WHERE id=1")
+        defer { sqlite3_finalize(statement) }
+        let status = sqlite3_step(statement)
+        if status == SQLITE_DONE { return SyncWorkspace() }
+        guard status == SQLITE_ROW else { throw error() }
+        let value = try decoder.decode(SyncWorkspace.self, from: data(statement, column: 0))
+        guard value.version == 1 else { throw SyncExecutionError.persistence("Configuraciones de una versión incompatible.") }
+        return value
+    }
+
+    public func saveWorkspace(_ workspace: SyncWorkspace) throws {
+        guard workspace.version == 1 else { throw SyncExecutionError.persistence("Versión de configuraciones incompatible.") }
+        let statement = try prepare("INSERT INTO workspace(id,payload) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload")
+        defer { sqlite3_finalize(statement) }
+        bind(try encoder.encode(workspace), to: statement, at: 1); try stepWrite(statement)
+    }
+
+    /// Recover a verified creation if a crash preceded the UI's configuration save.
+    public func restoreVerifiedTargets(in workspace: SyncWorkspace) throws -> SyncWorkspace {
+        var recovered = workspace
+        for record in try allRecords() {
+            guard let request = record.plan.request, let profileID = request.profileID,
+                  let p = recovered.profiles.firstIndex(where: { $0.id == profileID }),
+                  recovered.profiles[p].request.revision == request.revision,
+                  recovered.profiles[p].request.accountIDs == request.accountIDs,
+                  recovered.profiles[p].request.storefronts == request.storefronts,
+                  recovered.profiles[p].request.options == request.options,
+                  recovered.profiles[p].isDemo == record.isDemo else { continue }
+            for step in record.executions where step.state == .verified && step.operation.kind == .createPlaylist {
+                guard let source = step.operation.sourcePlaylist, let targetID = step.receipt?.createdID,
+                      request.playlists.contains(source) else { continue }
+                let target = PlaylistTarget(source: source, targetID: targetID)
+                if request.options.existingPlaylist == .copy {
+                    if !recovered.profiles[p].request.copyTargets.contains(target) { recovered.profiles[p].request.copyTargets.append(target) }
+                } else {
+                    var targets = recovered.profiles[p].request.playlistTargets ?? []
+                    if !targets.contains(target) { targets.append(target) }
+                    recovered.profiles[p].request.playlistTargets = targets
+                }
+            }
+        }
+        for i in recovered.jobs.indices where recovered.jobs[i].state == .ready {
+            if let id = recovered.jobs[i].request.profileID, let profile = recovered.profiles.first(where: { $0.id == id }), profile.request != recovered.jobs[i].request {
+                recovered.jobs[i].state = .attention; recovered.jobs[i].plan = nil
+                recovered.jobs[i].message = "Se recuperó un destino creado y verificado. Prepará una propuesta nueva antes de continuar."
+            }
+        }
+        return recovered
+    }
+
+    /// Never remove the evidence needed to reconcile an interrupted write.
+    @discardableResult
+    public func clearSettledHistory() throws -> Int {
+        var deleted = 0
+        try transaction {
+            for record in try allRecords() {
+                let uncertain = record.summary.status == .running || record.executions.contains {
+                    $0.state == .unknown || $0.state == .applying || (($0.state == .failed || $0.state == .pending) && $0.before != nil)
+                }
+                guard !uncertain else { continue }
+                let statement = try prepare("DELETE FROM runs WHERE id=?")
+                defer { sqlite3_finalize(statement) }
+                bind(record.id.uuidString, to: statement, at: 1); try stepWrite(statement); deleted += 1
+            }
+        }
+        return deleted
+    }
 
     public func save(_ record: RunRecord) throws {
         try transaction {

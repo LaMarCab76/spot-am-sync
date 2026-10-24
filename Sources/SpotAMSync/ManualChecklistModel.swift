@@ -29,8 +29,10 @@ final class ManualChecklistModel: ObservableObject {
     private var demoMarks: [String: Set<String>] = [:]
     private var workTask: Task<Void, Never>?
     private var importPanel: NSOpenPanel?
+    private let storageDirectory: URL?
 
-    init() {
+    init(storageDirectory: URL? = nil) {
+        self.storageDirectory = storageDirectory
         restoreSavedState()
     }
 
@@ -44,7 +46,8 @@ final class ManualChecklistModel: ObservableObject {
             do {
                 if store == nil {
                     let base: URL
-                    if let override = ProcessInfo.processInfo.environment["SPOTAM_DATA_DIR"], !override.isEmpty {
+                    if let storageDirectory { base = storageDirectory }
+                    else if let override = ProcessInfo.processInfo.environment["SPOTAM_DATA_DIR"], !override.isEmpty {
                         base = URL(fileURLWithPath: override, isDirectory: true)
                     } else {
                         base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,

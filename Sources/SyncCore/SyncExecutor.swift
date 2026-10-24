@@ -32,7 +32,7 @@ public actor SyncExecutor {
         let selected = plan.operations.filter { selectedIDs.contains($0.id) }
         guard plan.snapshots.count == 2, Set(plan.snapshots.map { $0.account.service }).count == 2,
               !selected.contains(where: { plan.mode.base == $0.service }),
-              plan.mode != .merge || !selected.contains(where: { $0.kind.isDestructive }) else { throw SyncExecutionError.invalidSelection }
+              plan.mode != .merge || plan.undoOfRunID != nil || !selected.contains(where: { $0.kind.isDestructive }) else { throw SyncExecutionError.invalidSelection }
         // Sorting ensures additive changes precede destructive operations, while keeping playlist operations stable.
         let ordered = plan.operations.enumerated().filter { selectedIDs.contains($0.element.id) }.sorted {
             let lhs = $0.element.kind.isDestructive ? 1 : 0, rhs = $1.element.kind.isDestructive ? 1 : 0
@@ -244,7 +244,23 @@ public actor SyncExecutor {
                 record.finalSnapshots = final
                 var capabilities: [MusicService: ProviderCapabilities] = [:]
                 for (service, provider) in providers { capabilities[service] = await provider.capabilities() }
-                let remaining = SyncPlanner.makePlan(snapshots: final, mode: record.plan.mode, decisions: record.decisions, capabilities: capabilities)
+                var request = record.plan.request
+                if request?.options.existingPlaylist == .copy {
+                    for step in record.executions where step.state == .verified && step.operation.kind == .createPlaylist {
+                        if let source = step.operation.sourcePlaylist, let id = step.receipt?.createdID {
+                            request?.copyTargets.removeAll { $0.source == source }
+                            request?.copyTargets.append(PlaylistTarget(source: source, targetID: id))
+                        }
+                    }
+                }
+                let remaining: SyncPlan
+                if record.plan.undoOfRunID != nil {
+                    let verifiedParents = Set(record.executions.filter { $0.state == .verified }.map { $0.parentOperationID ?? $0.operation.id })
+                    remaining = SyncPlan(mode: record.plan.mode, snapshots: final,
+                        operations: record.plan.operations.filter { !verifiedParents.contains($0.id) }, issues: record.plan.issues)
+                } else {
+                    remaining = SyncPlanner.makePlan(snapshots: final, mode: record.plan.mode, decisions: record.decisions, capabilities: capabilities, request: request)
+                }
                 record.remainingPlan = remaining
                 if remaining.operations.isEmpty && remaining.issues.isEmpty && final.allSatisfy(\.complete) {
                     record.summary.status = .completed
@@ -279,6 +295,12 @@ public actor SyncExecutor {
     }
 
     private func requireApproval(_ record: inout RunRecord) async throws {
+        if let request = record.plan.request, let profileID = request.profileID {
+            let workspace = try await store.loadWorkspace()
+            guard workspace.profiles.contains(where: { $0.id == profileID && $0.request == request }) else {
+                throw SyncExecutionError.unsafeResume("La configuración guardada cambió o fue eliminada. Prepará y confirmá una propuesta nueva.")
+            }
+        }
         if try await store.load(id: record.id)?.approvalRevoked == true { record.approvalRevoked = true }
         guard !record.approvalRevoked else {
             throw SyncExecutionError.unsafeResume("La aprobación fue revocada. Revisá las políticas y confirmá un nuevo análisis.")
@@ -417,6 +439,12 @@ public actor SyncExecutor {
         for i in retries { record.executions[i].state = .pending }
     }
     private func rememberCreatedPlaylist(operation: SyncOperation, createdID: String, record: inout RunRecord) {
+        if let source = operation.sourcePlaylist {
+            if record.plan.request?.options.existingPlaylist == .copy { return }
+            let link = source.service == .spotify ? PlaylistLink(spotifyID: source.playlistID, appleMusicID: createdID) : PlaylistLink(spotifyID: createdID, appleMusicID: source.playlistID)
+            if !record.decisions.playlists.contains(link) { record.decisions.playlists.append(link) }
+            return
+        }
         let sourceService = operation.service.other
         guard let snapshot = record.plan.snapshots.first(where: { $0.account.service == sourceService }) else { return }
         // A source is linked only if the approved name identifies it unambiguously.

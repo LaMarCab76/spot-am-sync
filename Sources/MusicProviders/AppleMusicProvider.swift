@@ -196,6 +196,7 @@ public actor AppleMusicProvider: MusicProvider {
             playlists.append(Playlist(id: id, name: a["name"].nonempty ?? "Playlist sin datos", description: a["description"]["standard"].string ?? "",
                 tracks: tracks.tracks, editable: editable, ownership: .unknown,
                 contentsComplete: tracks.complete && a["name"].nonempty != nil))
+            playlists[playlists.count - 1].artworkURL = a["artwork"]["url"].nonempty?.replacingOccurrences(of: "{w}", with: "600").replacingOccurrences(of: "{h}", with: "600")
             coverage.playlists = coverage.playlists && tracks.complete && a["name"].nonempty != nil
             coverage.notes += page.notes.map { "Contenido de playlist: " + $0 }
         }

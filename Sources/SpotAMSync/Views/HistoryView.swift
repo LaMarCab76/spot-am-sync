@@ -8,9 +8,10 @@ struct HistoryView: View {
     @ViewState private var search = ""
     @ViewState private var exportDocument: RunSummaryDocument?
     @ViewState private var showingExport = false
+    @ViewState private var statusFilter = "all"
 
     private var runs: [RunSummary] {
-        model.history.filter { search.isEmpty || "\($0.status.displayTitle) \($0.message)".localizedCaseInsensitiveContains(search) }
+        model.history.filter { (statusFilter == "all" || $0.status.rawValue == statusFilter) && (search.isEmpty || "\($0.status.displayTitle) \($0.message)".localizedCaseInsensitiveContains(search)) }
             .sorted { $0.startedAt > $1.startedAt }
     }
     private var selected: RunSummary? { runs.first { $0.id == selectedID } ?? runs.first }
@@ -24,6 +25,10 @@ struct HistoryView: View {
                         .help("Actualizar historial").accessibilityLabel("Actualizar historial").disabled(model.isBusy).padding(.top, 27)
                 }
                 SearchField(text: $search, prompt: "Buscar por estado o mensaje")
+                Picker("Estado", selection: $statusFilter) {
+                    Text("Todos").tag("all"); Text("Completadas").tag("completed"); Text("Con pendientes").tag("partial")
+                    Text("Necesitan revisión").tag("failed"); Text("Canceladas").tag("cancelled"); Text("Interrumpidas").tag("interrupted")
+                }.pickerStyle(.segmented)
             }.padding(28)
             if model.history.isEmpty {
                 EmptyState(symbol: "clock.arrow.circlepath", title: "Tu historial empieza con la primera ejecución", message: "Los resultados completados, parciales o interrumpidos aparecerán acá para que puedas revisarlos.")
@@ -52,6 +57,25 @@ struct HistoryView: View {
                                     Button("Exportar registro completo") { model.exportHistoricalRun(id: selected.id, backupOnly: false) }
                                     Button("Exportar respaldo previo") { model.exportHistoricalRun(id: selected.id, backupOnly: true) }
                                 }.disabled(model.isBusy)
+                                if let record = model.selectedHistoryRecord, record.id == selected.id {
+                                    HStack {
+                                        Button("Comprobar o preparar de nuevo") { model.retryHistoricalRun(record) }
+                                        Button("Preparar propuesta para deshacer") { model.prepareUndo(record) }
+                                    }.disabled(!model.canAnalyze || record.isDemo != model.isDemo)
+                                    Text("Comprobar resultados inciertos solo lee el servicio. Reintentar o deshacer requiere una nueva propuesta y confirmación.")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                    ForEach(record.executions) { step in
+                                        VStack(alignment: .leading, spacing: 7) {
+                                            HStack {
+                                                Text(step.operation.title).font(.callout.weight(.medium))
+                                                Spacer()
+                                                StatusPill(title: stateTitle(step.state), color: step.state == .verified ? SyncStyle.green : SyncStyle.coral)
+                                            }
+                                            Text("\(step.operation.service.name) · \(step.operation.kind.label)").font(.caption).foregroundStyle(.secondary)
+                                            if let error = step.error { Text(error).font(.caption).foregroundStyle(SyncStyle.coral) }
+                                        }.padding(13).background(SyncStyle.surface, in: RoundedRectangle(cornerRadius: 10))
+                                    }
+                                }
                                 if !selected.logs.isEmpty { LogView(logs: selected.logs, title: "Mensajes de la ejecución") }
                             }.padding(.leading, 16).padding(.trailing, 28).padding(.bottom, 28)
                         }
@@ -60,8 +84,16 @@ struct HistoryView: View {
             }
         }
         .onAppear { if !model.isBusy { model.refreshHistory() } }
+        .task(id: selected?.id) { if let id = selected?.id { model.loadHistoryRecord(id: id) } }
         .fileExporter(isPresented: $showingExport, document: exportDocument, contentType: .json, defaultFilename: "SpotAMSync-resumen-\(selected?.startedAt.formatted(.iso8601.year().month().day()) ?? "ejecucion")") { result in
             if case .failure(let error) = result { model.errorMessage = error.localizedDescription }
+        }
+    }
+
+    private func stateTitle(_ state: ExecutionState) -> String {
+        switch state {
+        case .pending: return "Sin enviar"; case .applying: return "En curso"; case .verified: return "Verificada"
+        case .failed: return "Falló"; case .unknown: return "Resultado incierto"; case .rejected: return "Rechazada"
         }
     }
 

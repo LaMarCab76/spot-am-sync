@@ -165,6 +165,7 @@ public actor SpotifyProvider: MusicProvider {
                 description: value["description"].string ?? "", tracks: content.tracks,
                 editable: ownership == .owned || ownership == .collaborative, ownership: ownership,
                 contentsComplete: contentComplete && value["name"].nonempty != nil, version: value["snapshot_id"].string))
+            playlists[playlists.count - 1].artworkURL = value["images"].array?.first?["url"].nonempty
             coverage.playlists = coverage.playlists && contentComplete && value["name"].nonempty != nil
             coverage.notes += content.notes.map { "Contenido de playlist: " + $0 }
         }

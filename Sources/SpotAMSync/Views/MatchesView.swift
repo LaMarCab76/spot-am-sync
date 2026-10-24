@@ -2,13 +2,14 @@ import SwiftUI
 import SyncCore
 
 private enum MatchFilter: String, CaseIterable, Identifiable {
-    case pending = "Por revisar", unavailable = "Sin coincidencia", resolved = "Con selección", all = "Todas"
+    case pending = "Por revisar", unavailable = "Sin coincidencia", resolved = "Con selección", omitted = "Omitidas", all = "Todas"
     var id: String { rawValue }
-    func includes(confidence: MatchConfidence, selected: Bool) -> Bool {
+    func includes(confidence: MatchConfidence, selected: Bool, omitted: Bool = false) -> Bool {
         switch self {
-        case .pending: return !selected
-        case .unavailable: return confidence == .unavailable && !selected
+        case .pending: return !selected && !omitted
+        case .unavailable: return confidence == .unavailable && !selected && !omitted
         case .resolved: return selected
+        case .omitted: return omitted
         case .all: return true
         }
     }
@@ -22,7 +23,7 @@ struct MatchesView: View {
 
     private var tracks: [TrackMatch] {
         model.decisions.tracks.filter {
-            filter.includes(confidence: $0.confidence, selected: $0.selected != nil)
+            filter.includes(confidence: $0.confidence, selected: $0.selected != nil, omitted: $0.decision == .omitted)
                 && (search.isEmpty || "\($0.source.title) \($0.source.artist) \($0.source.albumTitle)".localizedCaseInsensitiveContains(search))
         }
     }
@@ -118,7 +119,7 @@ private struct TrackMatchCard: View {
                     Label("No se encontraron candidatos para elegir.", systemImage: "magnifyingglass").font(.callout).foregroundStyle(.secondary)
                 } else {
                     Text("Elegí la canción en \(match.sourceService.other.name)").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    ForEach(Array(match.candidates.prefix(5).enumerated()), id: \.offset) { _, candidate in
+                    ForEach(Array(model.orderedCandidates(match).prefix(5).enumerated()), id: \.offset) { _, candidate in
                         Button { model.selectTrack(matchID: match.id, targetID: candidate.id) } label: {
                             HStack(alignment: .top, spacing: 11) {
                                 Image(systemName: match.selected?.id == candidate.id ? "largecircle.fill.circle" : "circle")
@@ -156,7 +157,7 @@ private struct TrackMatchCard: View {
         }
         .sheet(isPresented: $reviewing) {
             let current = model.decisions.tracks.first { $0.id == match.id } ?? match
-            TrackCandidateReview(source: current.source, service: current.sourceService.other, candidates: current.candidates,
+            TrackCandidateReview(source: current.source, service: current.sourceService.other, candidates: model.orderedCandidates(current),
                                  selected: current.selected, notes: (current.searchNotes ?? []) + [current.reason], busy: model.isBusy,
                                  search: { model.searchTrack(matchID: current.id, query: $0) },
                                  choose: { model.selectTrack(matchID: current.id, targetID: $0.id) },
@@ -166,6 +167,8 @@ private struct TrackMatchCard: View {
                                  restore: { model.searchTrack(matchID: current.id, query: TrackSearchQuery(current.source), restoreRejected: true) },
                                  cancel: { model.cancel() })
         }
+        .onChange(of: reviewing) { _, value in model.holdsAutomaticPreparation = value }
+        .onDisappear { model.holdsAutomaticPreparation = false }
     }
 }
 

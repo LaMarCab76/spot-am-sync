@@ -11,7 +11,7 @@ build/
 .env.*
 !.env.example
 
-# Legacy Electron outputs (history retained during native consolidation)
+# Ignore generated files from previous Electron checkouts as well
 node_modules/
 out/
 dist/

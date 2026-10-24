@@ -22,6 +22,22 @@ La app incluye **Probar demostración**, con dos bibliotecas ficticias y proveed
 open "build/SpotAM Sync.app" --args --demo
 ```
 
+## App unificada en Swift
+
+La implementación activa es Swift/SwiftUI. Conserva el motor nativo y los flujos de revisión, e incorpora la navegación Liquid, Inicio, detalle de playlist, asistente de tres pasos, cola, programación y Ajustes. No requiere Node, Electron ni un servidor web.
+
+- **Nueva sincronización:** guarda cuentas, región, playlists elegidas, destino confirmado, dirección y opciones. Las canciones y álbumes guardados quedan fuera del alcance por playlist; se revisan por separado en **Bibliotecas**.
+- **Orden y repeticiones:** se conservan por defecto. Omitir repeticiones es una opción explícita. Desactivar orden conserva la secuencia de las ocurrencias existentes que sigan en la propuesta y agrega las faltantes.
+- **Copia independiente:** la primera ejecución crea una copia y conserva su ID verificado. Las propuestas siguientes actualizan esa copia; si desaparece, requieren revisión antes de crear otra.
+- **Cola y programación:** la cola se guarda en SQLite. Las revisiones por hora, día o semana leen los servicios y preparan propuestas. **Nunca aplican cambios sin confirmación.** Las conexiones, el inventario y la configuración se revalidan antes de escribir.
+- **Ventanas y horarios:** cerrar la ventana mantiene la app ejecutándose. Salir con ⌘Q detiene el proceso. Los horarios vencidos se comprueban al iniciar o despertar el Mac, sin repetir todos los intervalos perdidos; no se instala un agente de inicio ni se promete trabajo con la app terminada.
+- **Historial:** muestra cada paso y su evidencia, exporta CSV/JSON y permite comprobar resultados inciertos o preparar una nueva propuesta. Deshacer prepara operaciones inversas, solo cuando el estado sigue siendo compatible y el proveedor lo admite. Requiere otra confirmación.
+- **Datos:** la migración de SQLite conserva el journal y crea un respaldo consistente antes de cambiar el esquema. Borrar historial resuelto conserva escrituras inciertas. El modo demo mantiene sus configuraciones y cola separadas de las reales.
+
+Los materiales de SwiftUI se adaptan a macOS 14 o posterior. Las portadas se obtienen de los proveedores; cuando no hay una portada se muestra un marcador local, sin fotos de ejemplo en cuentas reales.
+
+Ver [contratos de la unificación](docs/SWIFT_UNIFICATION.md) y [validación de esta versión](docs/UNIFICATION_VALIDATION.md).
+
 ## Conectar Spotify
 
 1. Registrá una app en el [panel de Spotify](https://developer.spotify.com/dashboard).
@@ -136,9 +152,9 @@ El script envía el paquete a Apple, espera el resultado y adjunta el ticket. No
 
 ## Estructura
 
-- `Sources/SyncCore`: modelos, coincidencias, planificación, verificación, journal SQLite y ejecutor.
+- `Sources/SyncCore`: modelos, alcance, configuraciones, programación de lecturas, coincidencias, planificación, propuestas inversas, journal SQLite y ejecutor.
 - `Sources/MusicProviders`: OAuth, Keychain, transporte HTTP y adaptadores oficiales.
-- `Sources/SpotAMSync`: estado de la app e interfaz SwiftUI.
+- `Sources/SpotAMSync`: interfaz SwiftUI, coordinación de la cola, preferencias y notificaciones nativas.
 - `Tests`: pruebas de contratos, coincidencias, fallos de red, paginación, recuperación y concurrencia.
 - `scripts`: compilación del paquete, pruebas y notarización.
 
