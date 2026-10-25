@@ -53,16 +53,6 @@ struct MainView: View {
                     }.font(.caption).foregroundStyle(SyncStyle.coral).padding(.horizontal, 28).padding(.vertical, 9)
                         .background(SyncStyle.coral.opacity(0.08))
                 }
-                if let progress = model.libraryProgress ?? model.librarySync.libraryProgress {
-                    LibraryReadProgressView(progress: progress).padding(.horizontal, 28).padding(.top, 12)
-                }
-                if destination != .syncReview, !model.librarySync.readyDifferences.isEmpty {
-                    HStack(spacing: 10) {
-                        Label("\(model.librarySync.readyDifferences.count) altas listas para revisar", systemImage: "checklist")
-                        Spacer()
-                        Button("Revisar ahora") { navigate(.syncReview) }
-                    }.font(.callout).padding(.horizontal, 28).padding(.vertical, 10).background(SyncStyle.green.opacity(0.08))
-                }
                 content.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .background(SyncStyle.background)
@@ -170,20 +160,13 @@ struct MainView: View {
     }
 
     private var syncBar: some View {
-        HStack(spacing: 13) {
-            if model.isBusy { ProgressView().controlSize(.small) }
-            else { Image(systemName: "arrow.triangle.2.circlepath").font(.title3) }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(model.isBusy ? "En curso" : "Todo a tu ritmo").font(.caption.weight(.semibold))
-                Text(model.librarySync.library != nil ? model.librarySync.statusText : model.displayedStatusText).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(model.displayedStatusText)
+        let prefersLibrarySync = (destination == .newSync && model.editingProfileID == nil) ||
+            [.syncReview, .syncActivity, .spotifyLibrary, .appleMusicLibrary].contains(destination ?? .overview)
+        return SyncActivityStatusView(model: model, prefersLibrarySync: prefersLibrarySync) {
+                navigate(.syncReview)
             }
-            Spacer(minLength: 10)
-            if model.isBusy { Button("Detener") { model.cancel() } }
-            else if model.canResume { Button("Comprobar pendientes") { model.resume() } }
-            else { Button("Ver cambios") { navigate(.syncReview) }.buttonStyle(.plain).font(.caption.weight(.medium)) }
-        }.padding(.horizontal, 18).padding(.vertical, 13)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.15)))
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.15)))
             .shadow(color: .black.opacity(0.3), radius: 15, y: 5)
     }
 

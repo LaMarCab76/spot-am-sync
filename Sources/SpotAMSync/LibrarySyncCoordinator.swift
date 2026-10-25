@@ -67,6 +67,8 @@ final class LibrarySyncCoordinator: ObservableObject {
     @Published private(set) var session = LibrarySyncSession()
     @Published private(set) var loaded = false
     @Published private(set) var isAnalyzing = false
+    @Published private(set) var isReadingSources = false
+    @Published private(set) var lastCompletedSourceReadID: UUID?
     @Published private(set) var isApplying = false
     @Published private(set) var statusText = "Elegí las fuentes para empezar."
     @Published private(set) var progress: Double = 0
@@ -86,6 +88,7 @@ final class LibrarySyncCoordinator: ObservableObject {
     private var searchGenerations: [String: UUID] = [:]
     private var saveTask: Task<Void, Error>?
     private var generation = UUID()
+    private var libraryReadID: UUID?
     private var revision = 0
     private var decisionRevisions: [String: Int] = [:]
     private var providers: [MusicService: any MusicProvider] = [:]
@@ -142,16 +145,24 @@ final class LibrarySyncCoordinator: ObservableObject {
         guard loaded, !isWorking, !externalBusy(), let spotifyProvider = providers[.spotify] else { return }
         if !useOfficialApple && xml == nil { errorMessage = "Importá una exportación XML de Música o elegí la integración oficial."; return }
         if useOfficialApple && providers[.appleMusic] == nil { errorMessage = "Conectá Apple Music para leer su integración oficial."; return }
-        let token = UUID(); generation = token; isAnalyzing = true; errorMessage = nil; progress = 0
+        let token = UUID(); generation = token; isReadingSources = true; isAnalyzing = true
+        libraryReadID = token
+        libraryProgress = nil; errorMessage = nil; progress = 0
         statusText = "Leyendo Spotify…"
         analysisTask = Task {
-            defer { if generation == token { isAnalyzing = false; libraryProgress = nil; scheduleApplication() } }
+            defer {
+                if generation == token {
+                    libraryReadID = nil; isReadingSources = false; isAnalyzing = false; libraryProgress = nil
+                    scheduleApplication()
+                }
+            }
             do {
                 let fresh = try await spotifyProvider.fetchLibrary(progress: { [self] update in
                     await receiveProgress(update, generation: token)
                 })
                 try Task.checkCancellation()
                 guard generation == token, fresh.account.service == .spotify else { return }
+                libraryReadID = nil; libraryProgress = nil
                 var apple: LibrarySnapshot?
                 var source = xml
                 if useOfficialApple, let provider = providers[.appleMusic] {
@@ -172,11 +183,17 @@ final class LibrarySyncCoordinator: ObservableObject {
                 next.library = source; next.spotify = fresh; next.appleSnapshot = apple; next.isDemo = isDemo
                 session = next; archive.activeKey = key; revision += 1
                 await publishReport()
+                try Task.checkCancellation()
+                guard generation == token else { return }
                 onSnapshots?([fresh] + (apple.map { [$0] } ?? []))
                 statusText = "Fuentes disponibles. Elegí la base y el alcance."
+                lastCompletedSourceReadID = token
                 persist()
-            } catch is CancellationError { statusText = "Lectura cancelada. Se conserva la comparación anterior." }
-            catch { errorMessage = error.localizedDescription; statusText = "No se pudieron actualizar las fuentes." }
+            } catch is CancellationError {
+                if generation == token { statusText = "Lectura cancelada. Se conserva la comparación anterior." }
+            } catch {
+                if generation == token { errorMessage = error.localizedDescription; statusText = "No se pudieron actualizar las fuentes." }
+            }
         }
     }
 
@@ -211,6 +228,7 @@ final class LibrarySyncCoordinator: ObservableObject {
     func prepare() {
         guard loaded, !isApplying, !externalBusy(), let library, let spotify else { return }
         analysisTask?.cancel(); generation = UUID(); let token = generation
+        libraryReadID = nil; isReadingSources = false; libraryProgress = nil
         isAnalyzing = true; errorMessage = nil; progress = 0; statusText = "Comparando el alcance seleccionado…"
         analysisTask = Task {
             defer { if generation == token { isAnalyzing = false; scheduleApplication() } }
@@ -401,7 +419,8 @@ final class LibrarySyncCoordinator: ObservableObject {
     }
 
     private func receiveProgress(_ update: LibraryReadProgress, generation token: UUID) {
-        if generation == token { libraryProgress = update }
+        guard generation == token, libraryReadID == token, analysisTask?.isCancelled != true else { return }
+        if libraryProgress != update { libraryProgress = update }
     }
 
     func omit(_ difference: LibraryDifference) {
@@ -559,7 +578,10 @@ final class LibrarySyncCoordinator: ObservableObject {
     func cancel() {
         revokeQueued("Cancelado. Revisá y confirmá los cambios pendientes otra vez."); persist()
         if isApplying { Task { await executor?.cancel() }; statusText = "Deteniendo nuevos envíos y verificando la petición en curso…" }
-        else { analysisTask?.cancel(); searches.values.forEach { $0.cancel() }; statusText = "Deteniendo el análisis; se conservan los resultados revisados." }
+        else {
+            analysisTask?.cancel(); libraryReadID = nil; libraryProgress = nil
+            searches.values.forEach { $0.cancel() }; statusText = "Deteniendo el análisis; se conservan los resultados revisados."
+        }
     }
 
     func reconcile(_ batchID: UUID) {
