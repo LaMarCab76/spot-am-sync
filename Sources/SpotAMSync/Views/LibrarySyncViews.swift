@@ -6,6 +6,7 @@ struct LibrarySyncWizardView: View {
     @ViewState private var step = 1
     @ViewState private var officialApple = false
     @ViewState private var awaitingSources = false
+    @ViewState private var sourceReadBaseline: UUID?
     @ViewState private var mode = SyncMode.appleMusicBase
     @ViewState private var songPolicy = LibrarySyncPolicy.prepare
     @ViewState private var albumPolicy = LibrarySyncPolicy.prepare
@@ -39,7 +40,6 @@ struct LibrarySyncWizardView: View {
                     if step == 1 { sourcesStep }
                     if step == 2 { policiesStep }
                     if step == 3 { playlistsStep }
-                    LibraryAnalysisStatus(sync: sync)
                 }.padding(28).frame(maxWidth: 1100, alignment: .leading).frame(maxWidth: .infinity)
             }
             wizardFooter
@@ -48,7 +48,8 @@ struct LibrarySyncWizardView: View {
         .onChange(of: sync.isAnalyzing) { _, busy in
             if awaitingSources && !busy {
                 awaitingSources = false
-                if sync.errorMessage == nil, sync.library != nil, sync.spotify != nil { loadDraft(); step = 2 }
+                if sync.lastCompletedSourceReadID != sourceReadBaseline,
+                   sync.errorMessage == nil, sync.library != nil, sync.spotify != nil { loadDraft(); step = 2 }
             }
         }
     }
@@ -258,6 +259,7 @@ struct LibrarySyncWizardView: View {
             Spacer()
             if step == 1 {
                 Button(awaitingSources ? "Leyendo fuentes…" : "Leer fuentes y continuar") {
+                    sourceReadBaseline = sync.lastCompletedSourceReadID
                     awaitingSources = true; model.readSyncSources(useOfficialApple: officialApple)
                 }.buttonStyle(.borderedProminent).disabled(!canRead)
             } else if step == 2 {
@@ -303,24 +305,6 @@ struct LibrarySyncWizardView: View {
         appleSelection = configuration.scope.appleMusicPlaylistIDs ?? Set(applePlaylists.filter { $0.kind == .regular }.map(\.id))
         spotifySelection = configuration.scope.spotifyPlaylistIDs ?? Set(spotifyPlaylists.map(\.id))
         targets = Dictionary(configuration.playlistPairings.map { ($0.appleMusicID, $0.spotifyID) }, uniquingKeysWith: { first, _ in first })
-    }
-}
-
-private struct LibraryAnalysisStatus: View {
-    @ObservedObject var sync: LibrarySyncCoordinator
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if let progress = sync.libraryProgress { LibraryReadProgressView(progress: progress) }
-            if sync.isWorking {
-                HStack(spacing: 10) {
-                    ProgressView().controlSize(.small)
-                    Text(sync.statusText).font(.callout).fixedSize(horizontal: false, vertical: true)
-                    Spacer()
-                    Button(sync.isApplying ? "Detener envíos" : "Detener análisis") { sync.cancel() }
-                }
-                if sync.isAnalyzing { ProgressView(value: sync.progress).accessibilityLabel("Análisis de equivalencias") }
-            } else { Text(sync.statusText).font(.caption).foregroundStyle(.secondary) }
-        }
     }
 }
 
@@ -404,7 +388,6 @@ struct LibraryChangesView: View {
                         Button("Abrir asistente") { model.navigationRequest = .newSync }.buttonStyle(.borderedProminent)
                     } else {
                         comparisonCounts
-                        LibraryAnalysisStatus(sync: sync)
                         reviewControls
                         if visible.isEmpty {
                             EmptyState(symbol: "checkmark.circle", title: sync.isAnalyzing ? "El análisis sigue en curso" : "Sin diferencias en esta vista",
@@ -831,7 +814,6 @@ struct LibraryServiceView: View {
                     if section == .songs { songContent }
                     if section == .albums { albumContent }
                     if section == .playlists { playlistContent }
-                    LibraryAnalysisStatus(sync: sync)
                 }
             }.padding(28).frame(maxWidth: 1100, alignment: .leading).frame(maxWidth: .infinity)
         }
@@ -936,7 +918,6 @@ struct LibrarySyncActivityView: View {
             VStack(alignment: .leading, spacing: 22) {
                 PageHeading(eyebrow: "Actividad de sincronización", title: "En curso y lotes confirmados",
                             subtitle: "Cada lote conserva los cambios concretos que confirmaste. Los nuevos resultados esperan otra decisión.")
-                LibraryAnalysisStatus(sync: sync)
                 HStack {
                     Button("Volver a revisar") { model.navigationRequest = .syncReview }
                     Button("Actualizar fuentes") { model.readSyncSources(useOfficialApple: sync.session.appleSnapshot != nil) }
