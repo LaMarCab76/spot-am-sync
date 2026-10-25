@@ -1,5 +1,15 @@
 # Validación local
 
+## Callback local de Spotify — 0.2.1
+
+Se reprodujo en macOS el error de inicio del callback: configurar `127.0.0.1:43821` en `requiredLocalEndpoint` y pasar además `on: 43821` a `NWListener` arroja `POSIX EINVAL` durante el inicializador, antes de abrir el navegador. Usar únicamente el endpoint local permite crear el listener y alcanzar el estado `ready` en el mismo puerto.
+
+- La app conserva el redirect URI `http://127.0.0.1:43821/callback` y la escucha restringida a loopback.
+- Tres regresiones ejercitan el listener real con un navegador sustituido por una función de prueba: callback HTTP completo y segundo intento; cancelación y nuevo intento; fallo al abrir el navegador y nuevo intento. La respuesta HTTP no expone el código ni el estado OAuth.
+- `bash scripts/test.sh`: **290 pruebas aprobadas**, sin fallos: 180 de SyncCore, 88 de MusicProviders y 22 de SpotAMSync. Las pruebas de red requieren poder abrir el puerto local `43821`.
+- Los valores OAuth son ficticios. Estas pruebas no abren el navegador, no contactan Spotify, no acceden al Llavero y no acreditan la autorización de una cuenta real.
+- Build de producción 0.2.1 correcto; copia instalada verificada mediante firma y SHA-256. Se reabrió la app habitual y se comprobó que conservó el Client ID guardado y mostró **Conectar Spotify** habilitado. La autorización real queda a cargo del usuario.
+
 ## Integración con main — 24 de octubre de 2026
 
 Se integraron las correcciones locales con `44f38ac`, que contiene la interfaz SwiftUI, el comparador por etapas, la sincronización por playlist y las propuestas programadas con confirmación. Se conservan ambas líneas de trabajo mediante un merge normal.

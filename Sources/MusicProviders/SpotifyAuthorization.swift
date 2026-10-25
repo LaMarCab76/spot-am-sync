@@ -131,15 +131,19 @@ public struct SpotifyBrowserAuthorization: SpotifyAuthorizing {
     }
 }
 
-private final class SpotifyLoopbackSession: @unchecked Sendable {
+final class SpotifyLoopbackSession: @unchecked Sendable {
     private let queue = DispatchQueue(label: "SpotAMSync.spotify.loopback")
     private let url: URL, state: String, timeout: TimeInterval
+    private let openURL: @MainActor @Sendable (URL) -> Bool
     private var listener: NWListener?
     private var connections: [NWConnection] = []
     private var continuation: CheckedContinuation<URL, Error>?
     private var terminal: Result<URL, Error>?
     private var timer: DispatchWorkItem?
-    init(url: URL, state: String, timeout: TimeInterval) { self.url = url; self.state = state; self.timeout = timeout }
+    init(url: URL, state: String, timeout: TimeInterval,
+         openURL: @escaping @MainActor @Sendable (URL) -> Bool = { NSWorkspace.shared.open($0) }) {
+        self.url = url; self.state = state; self.timeout = timeout; self.openURL = openURL
+    }
     func cancel() { queue.async { self.finish(.failure(CancellationError())) } }
     func run() async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
@@ -149,7 +153,9 @@ private final class SpotifyLoopbackSession: @unchecked Sendable {
                 do {
                     let parameters = NWParameters.tcp
                     parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: 43821)
-                    let listener = try NWListener(using: parameters, on: 43821)
+                    // requiredLocalEndpoint already specifies the address and port.
+                    // Passing `on:` too makes Network.framework reject the parameters (EINVAL).
+                    let listener = try NWListener(using: parameters)
                     self.listener = listener
                     listener.stateUpdateHandler = { [weak self] status in
                         guard let self else { return }
@@ -157,7 +163,7 @@ private final class SpotifyLoopbackSession: @unchecked Sendable {
                         case .ready:
                             Task { @MainActor in
                                 guard self.queue.sync(execute: { self.terminal == nil }) else { return }
-                                let opened = NSWorkspace.shared.open(self.url)
+                                let opened = self.openURL(self.url)
                                 if !opened { self.queue.async { self.finish(.failure(ProviderError.network("No se pudo abrir el navegador del sistema."))) } }
                             }
                         case .failed:
