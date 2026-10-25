@@ -15,7 +15,15 @@ struct SpotAMSyncApp: App {
                 .onAppear {
                     guard !didLaunch else { return }
                     didLaunch = true
-                    if ProcessInfo.processInfo.arguments.contains("--demo") { model.loadDemo() }
+                    if ProcessInfo.processInfo.arguments.contains("--demo") {
+                        Task {
+                            // Loading the persisted checklist briefly owns the busy
+                            // slot at launch; honour --demo after hydration finishes.
+                            while model.isBusy, !Task.isCancelled { try? await Task.sleep(nanoseconds: 10_000_000) }
+                            guard !Task.isCancelled else { return }
+                            model.loadDemo()
+                        }
+                    }
                     NSApplication.shared.activate(ignoringOtherApps: true)
                 }
         }

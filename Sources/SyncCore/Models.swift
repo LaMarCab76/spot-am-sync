@@ -44,6 +44,25 @@ public struct Track: Codable, Hashable, Sendable, Identifiable {
         self.explicit = explicit; self.available = available; self.isLocal = isLocal
     }
     public var playableID: String { catalogID ?? id }
+
+    // Artwork is presentation data. Keep every other field in equality/hash so
+    // refreshed covers cannot invalidate a choice, while music changes still do.
+    public static func == (lhs: Track, rhs: Track) -> Bool {
+        lhs.id == rhs.id && lhs.catalogID == rhs.catalogID && lhs.title == rhs.title &&
+        lhs.artist == rhs.artist && lhs.albumTitle == rhs.albumTitle && lhs.durationMS == rhs.durationMS &&
+        lhs.isrc == rhs.isrc && lhs.explicit == rhs.explicit && lhs.available == rhs.available &&
+        lhs.isLocal == rhs.isLocal && lhs.url == rhs.url && lhs.artistNames == rhs.artistNames &&
+        lhs.albumID == rhs.albumID && lhs.releaseDate == rhs.releaseDate &&
+        lhs.discNumber == rhs.discNumber && lhs.trackNumber == rhs.trackNumber
+    }
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id); hasher.combine(catalogID); hasher.combine(title); hasher.combine(artist)
+        hasher.combine(albumTitle); hasher.combine(durationMS); hasher.combine(isrc); hasher.combine(explicit)
+        hasher.combine(available); hasher.combine(isLocal); hasher.combine(url); hasher.combine(artistNames)
+        hasher.combine(albumID); hasher.combine(releaseDate); hasher.combine(discNumber); hasher.combine(trackNumber)
+    }
+
+    public var withoutArtwork: Track { var copy = self; copy.artworkURL = nil; return copy }
 }
 
 public struct Album: Codable, Hashable, Sendable, Identifiable {
@@ -61,6 +80,19 @@ public struct Album: Codable, Hashable, Sendable, Identifiable {
         self.upc = upc; self.tracks = tracks; self.isCompleteAlbum = isCompleteAlbum; self.available = available
     }
     public var playableID: String { catalogID ?? id }
+
+    public static func == (lhs: Album, rhs: Album) -> Bool {
+        lhs.id == rhs.id && lhs.catalogID == rhs.catalogID && lhs.title == rhs.title &&
+        lhs.artist == rhs.artist && lhs.upc == rhs.upc && lhs.tracks == rhs.tracks &&
+        lhs.isCompleteAlbum == rhs.isCompleteAlbum && lhs.available == rhs.available
+    }
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id); hasher.combine(catalogID); hasher.combine(title); hasher.combine(artist)
+        hasher.combine(upc); hasher.combine(tracks); hasher.combine(isCompleteAlbum); hasher.combine(available)
+    }
+    public var withoutArtwork: Album {
+        var copy = self; copy.artworkURL = nil; copy.tracks = tracks.map(\.withoutArtwork); return copy
+    }
 }
 
 public enum PlaylistOwnership: String, Codable, Sendable { case owned, collaborative, followed, system, unknown }
@@ -78,6 +110,14 @@ public struct Playlist: Codable, Equatable, Sendable, Identifiable {
     public init(id: String, name: String, description: String = "", tracks: [Track] = [], editable: Bool = true, ownership: PlaylistOwnership = .owned, contentsComplete: Bool = true, version: String? = nil) {
         self.id = id; self.name = name; self.description = description; self.tracks = tracks
         self.editable = editable; self.ownership = ownership; self.contentsComplete = contentsComplete; self.version = version
+    }
+    public static func == (lhs: Playlist, rhs: Playlist) -> Bool {
+        lhs.id == rhs.id && lhs.name == rhs.name && lhs.description == rhs.description && lhs.tracks == rhs.tracks &&
+        lhs.editable == rhs.editable && lhs.ownership == rhs.ownership &&
+        lhs.contentsComplete == rhs.contentsComplete && lhs.version == rhs.version
+    }
+    public var withoutArtwork: Playlist {
+        var copy = self; copy.artworkURL = nil; copy.tracks = tracks.map(\.withoutArtwork); return copy
     }
 }
 
@@ -113,13 +153,19 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable, Identifiable {
         let included = Set(playlists.flatMap(\.tracks).map(\.playableID))
         return savedTracks.filter { !included.contains($0.playableID) }
     }
+    /// For musical digests only; persist the original snapshot to retain artwork.
+    public var withoutArtwork: LibrarySnapshot {
+        var copy = self
+        copy.playlists = playlists.map(\.withoutArtwork)
+        copy.savedTracks = savedTracks.map(\.withoutArtwork)
+        copy.savedAlbums = savedAlbums.map(\.withoutArtwork)
+        return copy
+    }
     public var stateFingerprint: String {
-        var stable = self
+        var stable = withoutArtwork
         stable.id = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
         stable.fetchedAt = Date(timeIntervalSince1970: 0)
         stable.playlists.sort { $0.id < $1.id }
-        // Artwork is presentation metadata and may rotate independently of music.
-        for index in stable.playlists.indices { stable.playlists[index].artworkURL = nil }
         stable.savedTracks.sort { $0.id < $1.id }
         stable.savedAlbums.sort { $0.id < $1.id }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
@@ -183,6 +229,12 @@ public struct SyncOperation: Codable, Equatable, Sendable, Identifiable {
         self.id = id; self.service = service; self.kind = kind; self.targetID = targetID; self.title = title
         self.detail = detail; self.playlistName = playlistName; self.playlistDescription = playlistDescription
         self.tracks = tracks; self.albums = albums; self.beforeTrackIDs = beforeTrackIDs; self.blockedReason = blockedReason
+    }
+}
+
+extension SyncOperation {
+    public var withoutArtwork: SyncOperation {
+        var copy = self; copy.tracks = tracks.map(\.withoutArtwork); copy.albums = albums.map(\.withoutArtwork); return copy
     }
 }
 
@@ -261,6 +313,9 @@ public struct SyncPlan: Codable, Equatable, Sendable, Identifiable {
         self.request = request
     }
     public var executable: [SyncOperation] { operations.filter { $0.blockedReason == nil } }
+    public var withoutArtwork: SyncPlan {
+        var copy = self; copy.snapshots = snapshots.map(\.withoutArtwork); copy.operations = operations.map(\.withoutArtwork); return copy
+    }
 }
 
 public struct MutationReceipt: Codable, Equatable, Sendable {

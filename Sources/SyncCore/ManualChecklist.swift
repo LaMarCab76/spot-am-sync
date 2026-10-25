@@ -2,7 +2,7 @@ import Foundation
 import CryptoKit
 
 /// Coverage concerns the imported document, never the live Apple Music account.
-public struct ManualMusicLibrary: Codable, Sendable {
+public struct ManualMusicLibrary: Codable, Equatable, Sendable {
     public var id: String
     public var fileName: String
     public var importedAt: Date
@@ -10,11 +10,16 @@ public struct ManualMusicLibrary: Codable, Sendable {
     public var tracks: [Track]
     public var warnings: [String]
     public var complete: Bool
+    public var inventory: XMLLibraryInventory?
+    /// SHA-256 of the exact XML bytes, independent of the filename and import time.
+    public var documentDigest: String?
 
     public init(id: String, fileName: String, importedAt: Date = Date(), exportedAt: Date? = nil,
-                tracks: [Track], warnings: [String] = [], complete: Bool = true) {
+                tracks: [Track], warnings: [String] = [], complete: Bool = true,
+                inventory: XMLLibraryInventory? = nil, documentDigest: String? = nil) {
         self.id = id; self.fileName = fileName; self.importedAt = importedAt; self.exportedAt = exportedAt
         self.tracks = tracks; self.warnings = warnings; self.complete = complete
+        self.inventory = inventory; self.documentDigest = documentDigest
     }
 }
 

@@ -26,7 +26,10 @@ open "build/SpotAM Sync.app" --args --demo
 
 La implementación activa es Swift/SwiftUI. Conserva el motor nativo y los flujos de revisión, e incorpora la navegación Liquid, Inicio, detalle de playlist, asistente de tres pasos, cola, programación y Ajustes. No requiere Node, Electron ni un servidor web.
 
-- **Nueva sincronización:** guarda cuentas, región, playlists elegidas, destino confirmado, dirección y opciones. Las canciones y álbumes guardados quedan fuera del alcance por playlist; se revisan por separado en **Bibliotecas**.
+- **Nueva sincronización:** el asistente acepta Spotify autorizado y una exportación XML de Música, o ambas integraciones oficiales. Primero se eligen base y políticas de canciones/álbumes; la comparación comienza antes de confirmar las playlists. Los resultados aparecen progresivamente en **Cambios por revisar**. Las configuraciones oficiales anteriores se conservan.
+- **Bibliotecas:** Spotify y Apple Music tienen inventarios separados. Los conteos distinguen identidades de canción, membresías guardadas, álbumes y apariciones de playlists. Una equivalencia de catálogo no prueba presencia en la biblioteca ni en una playlist.
+- **Confirmación por lotes:** se puede revisar mientras continúa el análisis. Confirmar todas las altas captura sólo los cambios disponibles en ese momento. Los cambios de nombre, reemplazos de secuencia y bajas requieren confirmación separada. La cola aprobada se aplica cuando no hay análisis ni búsquedas activos, y verifica el resultado mediante lectura.
+- **Seguimiento:** compara ambos lados con la última referencia verificada. Sin referencia, comprueba las diferencias iniciales sin inferir eliminaciones. Cada nueva pasada necesita nuevas confirmaciones; una configuración nunca autoriza escrituras futuras.
 - **Orden y repeticiones:** se conservan por defecto. Omitir repeticiones es una opción explícita. Desactivar orden conserva la secuencia de las ocurrencias existentes que sigan en la propuesta y agrega las faltantes.
 - **Copia independiente:** la primera ejecución crea una copia y conserva su ID verificado. Las propuestas siguientes actualizan esa copia; si desaparece, requieren revisión antes de crear otra.
 - **Cola y programación:** la cola se guarda en SQLite. Las revisiones por hora, día o semana leen los servicios y preparan propuestas. **Nunca aplican cambios sin confirmación.** Las conexiones, el inventario y la configuración se revalidan antes de escribir.
@@ -35,6 +38,23 @@ La implementación activa es Swift/SwiftUI. Conserva el motor nativo y los flujo
 - **Datos:** la migración de SQLite conserva el journal y crea un respaldo consistente antes de cambiar el esquema. Borrar historial resuelto conserva escrituras inciertas. El modo demo mantiene sus configuraciones y cola separadas de las reales.
 
 Los materiales de SwiftUI se adaptan a macOS 14 o posterior. Las portadas se obtienen de los proveedores; cuando no hay una portada se muestra un marcador local, sin fotos de ejemplo en cuentas reales.
+
+## Sincronizar una exportación de Música con Spotify
+
+1. Conectá Spotify y abrí **Sincronización → Nueva sincronización**.
+2. Importá el XML exportado con **Música → Archivo → Biblioteca → Exportar biblioteca…** y leé las fuentes.
+3. Elegí Apple Music como base, Spotify como base o la verificación bidireccional inicial. Confirmá qué comparar de canciones y álbumes: preparar diferencias, avisar para elegir o excluir.
+4. Elegí las playlists incluidas en cada lado y confirmá explícitamente sus vínculos. Un nombre coincidente sólo sugiere una pareja. Las listas excluidas conservan su presencia en los inventarios.
+5. En **Cambios por revisar**, resolvé versiones, revisá los grupos separados y confirmá una selección o todas las altas listas. Podés dejar diferencias pendientes u omitirlas. Los resultados que lleguen después necesitarán otra confirmación.
+6. Consultá **Actividad → En curso y lotes**. Las altas Spotify se ejecutan y verifican; las tareas hacia Música permanecen manuales cuando la fuente Apple es XML. Marcarlas registra avance: otra exportación es la evidencia de presencia.
+
+El importador conserva playlists, jerarquía, listas vacías, orden y repeticiones. `Playlist Only` distingue observaciones de playlist; cuando el XML no demuestra membresía guardada, el asistente pide una elección explícita antes de preparar canciones para guardar en Spotify. Agrupar canciones por álbum tampoco demuestra que una edición completa esté guardada. Elegir una edición completa prepara una propuesta distinta que requiere confirmación.
+
+Las portadas de origen y candidatos acompañan la revisión. Si falta artwork del XML, la portada del equivalente Spotify puede mostrarse como referencia, identificada como tal. La lectura local opcional requiere seleccionar el XML y una carpeta de medios; sólo obtiene imágenes incrustadas en archivos vinculados inequívocamente. Las portadas exclusivas de la caché de Música y las portadas de playlists XML pueden seguir sin estar disponibles. Para comparar fotos de playlists hacen falta ambas imágenes originales: URLs diferentes por sí solas no prueban diferencias.
+
+Las transferencias guardan la exportación aprobada y el journal en SQLite. Un reinicio revoca los lotes todavía no enviados; los resultados inciertos se reconcilian mediante lectura antes de otro envío. Cancelar detiene también los lotes siguientes. Se crea un respaldo consistente antes de migrar el esquema y se preserva el checklist manual existente.
+
+Ver [contratos del flujo incremental](docs/INCREMENTAL_SYNC.md).
 
 Ver [contratos de la unificación](docs/SWIFT_UNIFICATION.md) y [validación de esta versión](docs/UNIFICATION_VALIDATION.md).
 
