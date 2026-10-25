@@ -112,7 +112,7 @@ private struct PlanBuilder {
     func finish() -> SyncPlan {
         let date = snapshots.map(\.fetchedAt).max() ?? Date(timeIntervalSince1970: 0)
         var plan = SyncPlan(id: zeroID, createdAt: date, mode: mode, snapshots: snapshots, operations: operations, issues: issues, request: request)
-        plan.id = stableID(encoded(plan))
+        plan.id = stableID(encoded(plan.withoutArtwork))
         return plan
     }
 
@@ -143,7 +143,7 @@ private struct PlanBuilder {
         }
         operation.blockedReason = reasons.isEmpty ? nil : reasons.joined(separator: " ")
         operation.id = zeroID
-        operation.id = stableID(encoded(operation))
+        operation.id = stableID(encoded(operation.withoutArtwork))
         operations.append(operation)
     }
 

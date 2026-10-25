@@ -166,7 +166,15 @@ public actor AppleMusicProvider: MusicProvider {
         result.track.url = c["url"].nonempty
         result.track.releaseDate = c["releaseDate"].nonempty
         result.track.discNumber = c["discNumber"].int; result.track.trackNumber = c["trackNumber"].int
+        result.track.artworkURL = artwork(a) ?? artwork(c)
         songCache["\(type):\(id)"] = result; return result
+    }
+    private func artwork(_ attributes: JSONValue) -> String? {
+        guard let template = attributes["artwork"]["url"].nonempty else { return nil }
+        let raw = template.replacingOccurrences(of: "{w}", with: "600").replacingOccurrences(of: "{h}", with: "600")
+        guard !raw.contains("{"), let url = URL(string: raw), url.scheme == "https",
+              url.host != nil, url.user == nil, url.password == nil else { return nil }
+        return raw
     }
     private func mappedTracks(_ page: CollectedPage, context: String) async throws -> (tracks: [Track], complete: Bool) {
         var values: [Track] = [], complete = page.complete
@@ -243,9 +251,13 @@ public actor AppleMusicProvider: MusicProvider {
         let isFull = libraryComplete && catalogComplete && library.tracks.map(\.playableID).sorted() == fullTracks.map(\.playableID).sorted()
         let a = value["attributes"], c = catalog?["attributes"] ?? .null
         let valid = a["name"].nonempty != nil && a["artistName"].nonempty != nil
-        let result = Album(id: id, catalogID: catalog?["id"].nonempty, title: a["name"].string ?? "Álbum sin datos",
+        var result = Album(id: id, catalogID: catalog?["id"].nonempty, title: a["name"].string ?? "Álbum sin datos",
             artist: a["artistName"].string ?? "", upc: c["upc"].nonempty, tracks: library.tracks, isCompleteAlbum: isFull,
             available: valid && catalog != nil)
+        result.artworkURL = artwork(a) ?? artwork(c)
+        for index in result.tracks.indices where result.tracks[index].artworkURL == nil {
+            result.tracks[index].artworkURL = result.artworkURL
+        }
         return (result, libraryComplete && mappingComplete && catalogComplete && valid)
     }
 
@@ -396,12 +408,16 @@ public actor AppleMusicProvider: MusicProvider {
             guard seen.insert(id).inserted else { continue }
             let a = item["attributes"]
             var candidate = Album(id: id, catalogID: id, title: a["name"].string ?? "", artist: a["artistName"].string ?? "", upc: a["upc"].nonempty, isCompleteAlbum: false, available: a["name"].nonempty != nil && a["artistName"].nonempty != nil)
+            candidate.artworkURL = artwork(a)
             if expanded < 3 && connected != nil {
                 expanded += 1
                 let included = item["relationships"]["tracks"]
                 let tracksPage = try await collectPages(origin: .apple, path: "/v1/catalog/\(storefront())/albums/\(resourceID(id))/tracks", initial: included["data"].array != nil ? included : nil, spotify: false, maximumPages: 2, preserveAuthorizationFailure: true) { try await self.get($0, budget: budget) }
                 let tracks = try await searchTracks(tracksPage.items, budget: budget)
                 candidate.tracks = tracks.candidates
+                for index in candidate.tracks.indices where candidate.tracks[index].artworkURL == nil {
+                    candidate.tracks[index].artworkURL = candidate.artworkURL
+                }
                 candidate.isCompleteAlbum = tracksPage.complete && tracks.coverage == .complete && a["trackCount"].int == candidate.tracks.count && !candidate.tracks.isEmpty
                 result.merge(.init(candidates: [candidate], coverage: tracksPage.searchCoverage, notes: tracksPage.notes))
                 result.merge(.init(coverage: tracks.coverage, notes: tracks.notes))

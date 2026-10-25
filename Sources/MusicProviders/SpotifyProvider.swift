@@ -303,7 +303,7 @@ public actor SpotifyProvider: MusicProvider {
         }
         return (tracks, page.complete && tracks.allSatisfy { $0.available && !$0.isLocal }, page.notes)
     }
-    private func track(_ value: JSONValue, fallback: String, albumTitle: String = "") async throws -> Track {
+    private func track(_ value: JSONValue, fallback: String, albumTitle: String = "", albumArtwork: String? = nil) async throws -> Track {
         try Task.checkCancellation()
         guard value["type"].string == "track", let id = value["id"].nonempty else {
             if value["is_local"].bool == true {
@@ -323,7 +323,15 @@ public actor SpotifyProvider: MusicProvider {
         result.albumID = value["album"]["id"].nonempty
         result.releaseDate = value["album"]["release_date"].nonempty
         result.discNumber = value["disc_number"].int; result.trackNumber = value["track_number"].int
+        result.artworkURL = artwork(value["album"]) ?? albumArtwork
         return result
+    }
+    private func artwork(_ value: JSONValue) -> String? {
+        value["images"].array?.compactMap { image -> String? in
+            guard let raw = image["url"].nonempty, let url = URL(string: raw),
+                  url.scheme == "https", url.host != nil, url.user == nil, url.password == nil else { return nil }
+            return raw
+        }.first
     }
     private func artist(_ value: JSONValue) -> String { (value["artists"].array ?? []).compactMap { $0["name"].nonempty }.joined(separator: ", ") }
     private func album(_ value: JSONValue, fallback: String,
@@ -335,10 +343,12 @@ public actor SpotifyProvider: MusicProvider {
         let page = try await pages("/v1/albums/\(resourceID(id))/tracks?limit=50",
                                    initial: value["tracks"].isObject ? value["tracks"] : nil, onPage: onPage)
         var tracks: [Track] = []
-        for (index, item) in page.items.enumerated() { tracks.append(try await track(item, fallback: "album:\(id):\(index)", albumTitle: title)) }
+        for (index, item) in page.items.enumerated() { tracks.append(try await track(item, fallback: "album:\(id):\(index)", albumTitle: title, albumArtwork: artwork(value))) }
         let complete = page.complete && value["total_tracks"].int == tracks.count && tracks.allSatisfy(\.available)
-        return Album(id: id, catalogID: id, title: title, artist: artist(value), upc: value["external_ids"]["upc"].nonempty,
+        var result = Album(id: id, catalogID: id, title: title, artist: artist(value), upc: value["external_ids"]["upc"].nonempty,
                      tracks: tracks, isCompleteAlbum: complete, available: value["name"].nonempty != nil && !artist(value).isEmpty)
+        result.artworkURL = artwork(value)
+        return result
     }
 
     public func catalogTrack(id: String) async throws -> Track? {
@@ -446,11 +456,12 @@ public actor SpotifyProvider: MusicProvider {
             }
             guard seen.insert(id).inserted else { continue }
             var candidate = Album(id: id, catalogID: id, title: item["name"].string ?? "", artist: artist(item), upc: item["external_ids"]["upc"].nonempty, isCompleteAlbum: false, available: item["name"].nonempty != nil && !artist(item).isEmpty)
+            candidate.artworkURL = artwork(item)
             if expanded < 3 && canExpand {
                 expanded += 1
                 let tracks = try await collectPages(origin: .spotify, path: "/v1/albums/\(resourceID(id))/tracks?limit=50", initial: item["tracks"].isObject ? item["tracks"] : nil, spotify: true, maximumPages: 2, preserveAuthorizationFailure: true) { try await self.get($0, budget: budget) }
                 for (i, value) in tracks.items.enumerated() {
-                    candidate.tracks.append(try await self.track(value, fallback: "album-search:\(i)", albumTitle: candidate.title))
+                    candidate.tracks.append(try await self.track(value, fallback: "album-search:\(i)", albumTitle: candidate.title, albumArtwork: candidate.artworkURL))
                 }
                 candidate.isCompleteAlbum = tracks.complete && item["total_tracks"].int == candidate.tracks.count && !candidate.tracks.isEmpty && candidate.tracks.allSatisfy(\.available)
                 result.merge(.init(candidates: [candidate], coverage: tracks.searchCoverage, notes: tracks.notes))

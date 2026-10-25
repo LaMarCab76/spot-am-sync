@@ -77,6 +77,11 @@ public actor ITunesCatalogSearch {
         result.url = item["trackViewUrl"].nonempty; result.releaseDate = item["releaseDate"].nonempty
         result.albumID = item["collectionId"].int.map { "itunes:\($0)" }
         result.discNumber = item["discNumber"].int; result.trackNumber = item["trackNumber"].int
+        result.artworkURL = ["artworkUrl100", "artworkUrl60"].compactMap { key -> String? in
+            guard let raw = item[key].nonempty, let url = URL(string: raw), url.scheme == "https",
+                  url.host != nil, url.user == nil, url.password == nil else { return nil }
+            return raw
+        }.first
         return result
     }
 }

@@ -31,6 +31,7 @@ final class AppModel: ObservableObject {
     @Published var canResume = false
     @Published var isReconciling = false
     let manualChecklist: ManualChecklistModel
+    let librarySync = LibrarySyncCoordinator()
     let workspace = WorkspaceCoordinator()
     @Published var activeRequest: SyncRequest?
     @Published var activeJobID: UUID?
@@ -42,9 +43,11 @@ final class AppModel: ObservableObject {
     @Published var holdsAutomaticPreparation = false
     private var workspaceChanges: AnyCancellable?
     private var manualChanges: AnyCancellable?
+    private var librarySyncChanges: AnyCancellable?
 
-    var isBusy: Bool { [.connecting, .analyzing, .searching, .syncing].contains(phase) || manualChecklist.isBusy }
-    var displayedStatusText: String { manualChecklist.isBusy && phase == .idle ? manualChecklist.statusText : statusText }
+    var legacyBusy: Bool { [.connecting, .analyzing, .searching, .syncing].contains(phase) || manualChecklist.isBusy }
+    var isBusy: Bool { legacyBusy || librarySync.isWorking }
+    var displayedStatusText: String { librarySync.isWorking ? librarySync.statusText : manualChecklist.isBusy && phase == .idle ? manualChecklist.statusText : statusText }
     var canGenerateManualChecklist: Bool { accounts[.spotify] != nil && !isDemo && !isBusy && manualChecklist.library != nil }
     var canAnalyze: Bool { accounts.count == 2 && !isBusy }
     var canExecute: Bool { accounts.count == 2 && snapshots.count == 2 && snapshots.allSatisfy(\.complete) && !selectedOperations.isEmpty && !isBusy && workspace.validate(activeRequest) && (activeJobID == nil || workspace.state.jobs.first(where: { $0.id == activeJobID })?.state == .ready) }
@@ -77,6 +80,10 @@ final class AppModel: ObservableObject {
             }
             let storage = try SyncStore(url: base.appendingPathComponent("library-sync.sqlite"))
             store = storage; executor = SyncExecutor(store: storage)
+            librarySyncChanges = librarySync.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+            librarySync.start(store: storage, externalBusy: { [weak self] in self?.legacyBusy ?? true })
+            librarySync.onSnapshots = { [weak self] fresh in self?.snapshots = fresh }
+            librarySync.onRun = { [weak self] in self?.refreshHistory() }
             workspaceChanges = workspace.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
             workspace.start(store: storage, systemServices: systemServices) { [weak self] in self?.workspaceTick() }
             if !initialProviders.isEmpty {
@@ -319,7 +326,8 @@ final class AppModel: ObservableObject {
 
     func cancel() {
         libraryReadID = nil; libraryProgress = nil
-        if phase == .syncing {
+        if librarySync.isWorking { librarySync.cancel() }
+        else if phase == .syncing {
             executionStartCancelled = true
             statusText = "Deteniendo nuevas operaciones y comprobando la petición en curso…"
             if isReconciling { workTask?.cancel() }
@@ -561,6 +569,14 @@ final class AppModel: ObservableObject {
 }
 
 extension AppModel {
+    func readSyncSources(useOfficialApple: Bool) {
+        guard !isBusy else { return }
+        revokePreviousApprovals(); plan = nil; selectedOperationIDs = []
+        librarySync.setProviders(providers, isDemo: isDemo)
+        librarySync.readSources(xml: manualChecklist.isDemo ? nil : manualChecklist.library,
+                                useOfficialApple: useOfficialApple || isDemo, isDemo: isDemo)
+    }
+
     func workspaceTick() {
         guard workspace.loaded else { return }
         if !workspace.state.preferences.spotifyClientID.isEmpty { spotifyClientID = workspace.state.preferences.spotifyClientID }

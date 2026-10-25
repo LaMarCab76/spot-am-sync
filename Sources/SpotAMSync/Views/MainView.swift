@@ -3,6 +3,7 @@ import SyncCore
 
 enum AppDestination: String, CaseIterable, Identifiable {
     case overview, newSync, manual, review, matches, playlists, playlistDetails, library, queue, activity, history, connections, settings
+    case spotifyLibrary, appleMusicLibrary, syncReview, syncActivity, legacySync
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -11,6 +12,8 @@ enum AppDestination: String, CaseIterable, Identifiable {
         case .matches: return "Coincidencias"; case .playlists: return "Playlists"; case .playlistDetails: return "Playlist"
         case .library: return "Bibliotecas"; case .queue: return "Cola y programación"; case .activity: return "Actividad"
         case .history: return "Historial"; case .connections: return "Conectar cuentas"; case .settings: return "Ajustes"
+        case .spotifyLibrary: return "Spotify"; case .appleMusicLibrary: return "Apple Music"
+        case .syncReview: return "Cambios por revisar"; case .syncActivity: return "En curso y lotes"; case .legacySync: return "Configuraciones guardadas"
         }
     }
     var symbol: String {
@@ -20,6 +23,8 @@ enum AppDestination: String, CaseIterable, Identifiable {
         case .playlists, .playlistDetails: return "music.note.list"; case .library: return "square.stack"
         case .queue: return "calendar.badge.clock"; case .activity: return "waveform.path"
         case .history: return "clock.arrow.circlepath"; case .connections: return "link"; case .settings: return "gearshape"
+        case .spotifyLibrary, .appleMusicLibrary: return "square.stack"
+        case .syncReview: return "checklist"; case .syncActivity: return "arrow.triangle.2.circlepath"; case .legacySync: return "slider.horizontal.3"
         }
     }
 }
@@ -48,8 +53,15 @@ struct MainView: View {
                     }.font(.caption).foregroundStyle(SyncStyle.coral).padding(.horizontal, 28).padding(.vertical, 9)
                         .background(SyncStyle.coral.opacity(0.08))
                 }
-                if let progress = model.libraryProgress {
+                if let progress = model.libraryProgress ?? model.librarySync.libraryProgress {
                     LibraryReadProgressView(progress: progress).padding(.horizontal, 28).padding(.top, 12)
+                }
+                if destination != .syncReview, !model.librarySync.readyDifferences.isEmpty {
+                    HStack(spacing: 10) {
+                        Label("\(model.librarySync.readyDifferences.count) altas listas para revisar", systemImage: "checklist")
+                        Spacer()
+                        Button("Revisar ahora") { navigate(.syncReview) }
+                    }.font(.callout).padding(.horizontal, 28).padding(.vertical, 10).background(SyncStyle.green.opacity(0.08))
                 }
                 content.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -70,9 +82,9 @@ struct MainView: View {
         .tint(SyncStyle.green).preferredColorScheme(.dark)
         .frame(minWidth: 1050, minHeight: 720)
         .onAppear { registerReopen(openWindow) }
-        .alert("No se pudo completar la acción", isPresented: Binding(get: { model.errorMessage != nil || model.workspace.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil; model.workspace.errorMessage = nil } })) {
-            Button("Entendido", role: .cancel) { model.errorMessage = nil; model.workspace.errorMessage = nil }
-        } message: { Text(model.errorMessage ?? model.workspace.errorMessage ?? "") }
+        .alert("No se pudo completar la acción", isPresented: Binding(get: { model.errorMessage != nil || model.workspace.errorMessage != nil || model.librarySync.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil; model.workspace.errorMessage = nil; model.librarySync.errorMessage = nil } })) {
+            Button("Entendido", role: .cancel) { model.errorMessage = nil; model.workspace.errorMessage = nil; model.librarySync.errorMessage = nil }
+        } message: { Text(model.errorMessage ?? model.workspace.errorMessage ?? model.librarySync.errorMessage ?? "") }
         .onChange(of: destination) { _, new in
             guard let new, new != previous else { return }
             if !movingHistory { backStack.append(previous); forwardStack = [] }
@@ -83,7 +95,6 @@ struct MainView: View {
         }
         .onReceive(model.$phase) { phase in
             switch phase {
-            case .syncing, .finished: navigate(.activity)
             case .connecting: navigate(.connections)
             default: break
             }
@@ -93,7 +104,13 @@ struct MainView: View {
     @ViewBuilder private var content: some View {
         switch destination ?? .overview {
         case .overview: HomeView(navigate: navigate)
-        case .newSync: NewSyncView()
+        case .newSync:
+            if model.editingProfileID != nil { NewSyncView() } else { LibrarySyncWizardView() }
+        case .legacySync: NewSyncView()
+        case .spotifyLibrary: LibraryServiceView(service: .spotify)
+        case .appleMusicLibrary: LibraryServiceView(service: .appleMusic)
+        case .syncReview: LibraryChangesView()
+        case .syncActivity: LibrarySyncActivityView()
         case .manual: ManualChecklistView(manual: model.manualChecklist)
         case .review: ReviewView(navigate: navigate)
         case .matches: MatchesView()
@@ -116,12 +133,12 @@ struct MainView: View {
                 Spacer()
             }.padding(.horizontal, 22).padding(.top, 25).padding(.bottom, 24)
             List(selection: $destination) {
-                Section {
-                    row(.overview); row(.playlists); row(.matches); row(.review)
-                }
-                Section("Tu biblioteca") { row(.manual); row(.library) }
-                Section("Seguimiento") { row(.queue); row(.activity); row(.history) }
-                Section { row(.connections); row(.settings) }
+                Section { row(.overview) }
+                Section("Bibliotecas") { row(.spotifyLibrary); row(.appleMusicLibrary) }
+                Section("Sincronización") { row(.newSync); row(.syncReview) }
+                Section("Actividad") { row(.syncActivity); row(.queue); row(.history) }
+                Section("Herramientas") { row(.manual); row(.review); row(.matches) }
+                Section("Ajustes") { row(.connections); row(.settings) }
             }.listStyle(.sidebar).scrollContentBackground(.hidden)
             VStack(spacing: 12) {
                 ForEach(MusicService.allCases) { service in
@@ -146,6 +163,9 @@ struct MainView: View {
                 let count = model.workspace.state.jobs.filter { $0.state == .ready }.count
                 if count > 0 { Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(SyncStyle.coral) }
             }
+            if value == .syncReview, !model.librarySync.readyDifferences.isEmpty {
+                Text("\(model.librarySync.readyDifferences.count)").font(.caption.monospacedDigit()).foregroundStyle(SyncStyle.green)
+            }
         }.padding(.vertical, 5).tag(value)
     }
 
@@ -155,12 +175,12 @@ struct MainView: View {
             else { Image(systemName: "arrow.triangle.2.circlepath").font(.title3) }
             VStack(alignment: .leading, spacing: 4) {
                 Text(model.isBusy ? "En curso" : "Todo a tu ritmo").font(.caption.weight(.semibold))
-                Text(model.displayedStatusText).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(model.displayedStatusText)
+                Text(model.librarySync.library != nil ? model.librarySync.statusText : model.displayedStatusText).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(model.displayedStatusText)
             }
             Spacer(minLength: 10)
             if model.isBusy { Button("Detener") { model.cancel() } }
             else if model.canResume { Button("Comprobar pendientes") { model.resume() } }
-            else { Button("Ver cola") { navigate(.queue) }.buttonStyle(.plain).font(.caption.weight(.medium)) }
+            else { Button("Ver cambios") { navigate(.syncReview) }.buttonStyle(.plain).font(.caption.weight(.medium)) }
         }.padding(.horizontal, 18).padding(.vertical, 13)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
             .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.15)))

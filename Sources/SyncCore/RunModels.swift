@@ -4,7 +4,7 @@ public enum RunStatus: String, Codable, Sendable {
     case completed, partial, cancelled, failed, running, interrupted
     public var label: String {
         switch self {
-        case .completed: return "Igualado"
+        case .completed: return "Verificado"
         case .partial: return "Con diferencias pendientes"
         case .cancelled: return "Cancelado"
         case .failed: return "Necesita revisión"
@@ -59,6 +59,8 @@ public struct RunRecord: Codable, Equatable, Sendable, Identifiable {
     public var remainingPlan: SyncPlan?
     public var isDemo: Bool
     public var approvalRevoked: Bool
+    public var snapshotSource: SnapshotTransferSource?
+    public var scopedApproval: Bool?
     public init(summary: RunSummary, plan: SyncPlan, decisions: MatchDecisions, executions: [OperationExecution], checkpoints: [LibrarySnapshot], finalSnapshots: [LibrarySnapshot] = [], remainingPlan: SyncPlan? = nil, isDemo: Bool = false, approvalRevoked: Bool = false) {
         self.summary = summary; self.plan = plan; self.decisions = decisions; self.executions = executions
         self.checkpoints = checkpoints; self.finalSnapshots = finalSnapshots; self.remainingPlan = remainingPlan; self.isDemo = isDemo
@@ -66,7 +68,7 @@ public struct RunRecord: Codable, Equatable, Sendable, Identifiable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case summary, plan, decisions, executions, checkpoints, finalSnapshots, remainingPlan, isDemo, approvalRevoked, executionSnapshots
+        case summary, plan, decisions, executions, checkpoints, finalSnapshots, remainingPlan, isDemo, approvalRevoked, executionSnapshots, snapshotSource, scopedApproval
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -89,6 +91,8 @@ public struct RunRecord: Codable, Equatable, Sendable, Identifiable {
         remainingPlan = try values.decodeIfPresent(SyncPlan.self, forKey: .remainingPlan)
         isDemo = try values.decode(Bool.self, forKey: .isDemo)
         approvalRevoked = try values.decodeIfPresent(Bool.self, forKey: .approvalRevoked) ?? false
+        snapshotSource = try values.decodeIfPresent(SnapshotTransferSource.self, forKey: .snapshotSource)
+        scopedApproval = try values.decodeIfPresent(Bool.self, forKey: .scopedApproval)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -112,6 +116,8 @@ public struct RunRecord: Codable, Equatable, Sendable, Identifiable {
         try values.encodeIfPresent(remainingPlan, forKey: .remainingPlan)
         try values.encode(isDemo, forKey: .isDemo)
         try values.encode(approvalRevoked, forKey: .approvalRevoked)
+        try values.encodeIfPresent(snapshotSource, forKey: .snapshotSource)
+        try values.encodeIfPresent(scopedApproval, forKey: .scopedApproval)
     }
 }
 

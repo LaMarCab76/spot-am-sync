@@ -45,8 +45,8 @@ public actor SyncStore {
         defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_ROW else { throw SyncExecutionError.persistence("Versión de datos ilegible.") }
         let version = sqlite3_column_int(statement, 0)
-        guard version <= 1 else { throw SyncExecutionError.persistence("Esta biblioteca fue creada por una versión más nueva de la app.") }
-        guard version == 0 else { return }
+        guard version <= 2 else { throw SyncExecutionError.persistence("Esta biblioteca fue creada por una versión más nueva de la app.") }
+        guard version < 2 else { return }
         if backup {
             let destination = url.deletingLastPathComponent().appendingPathComponent("library-sync-before-workspace-\(UUID().uuidString).sqlite")
             var copy: OpaquePointer?
@@ -63,7 +63,7 @@ public actor SyncStore {
             guard result == SQLITE_DONE, finish == SQLITE_OK else { throw SyncExecutionError.persistence("El respaldo SQLite no se completó.") }
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
         }
-        guard sqlite3_exec(database, "BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, started REAL NOT NULL, payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS decisions (account_pair TEXT PRIMARY KEY, payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS workspace (id INTEGER PRIMARY KEY CHECK(id=1), payload BLOB NOT NULL); PRAGMA user_version=1; COMMIT", nil, nil, nil) == SQLITE_OK else {
+        guard sqlite3_exec(database, "BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, started REAL NOT NULL, payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS decisions (account_pair TEXT PRIMARY KEY, payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS workspace (id INTEGER PRIMARY KEY CHECK(id=1), payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS sync_documents (key TEXT PRIMARY KEY, payload BLOB NOT NULL); PRAGMA user_version=2; COMMIT", nil, nil, nil) == SQLITE_OK else {
             sqlite3_exec(database, "ROLLBACK", nil, nil, nil)
             throw SyncExecutionError.persistence("No se pudo completar la migración de configuraciones.")
         }
@@ -78,6 +78,25 @@ public actor SyncStore {
         let value = try decoder.decode(SyncWorkspace.self, from: data(statement, column: 0))
         guard value.version == 1 else { throw SyncExecutionError.persistence("Configuraciones de una versión incompatible.") }
         return value
+    }
+
+    /// Versioned comparison sessions and finite approvals share the journal's
+    /// durable SQLite connection. They survive clearing settled run history.
+    public func loadDocument<Value: Decodable & Sendable>(_ type: Value.Type, key: String) throws -> Value? {
+        let statement = try prepare("SELECT payload FROM sync_documents WHERE key=?")
+        defer { sqlite3_finalize(statement) }
+        bind(key, to: statement, at: 1)
+        let status = sqlite3_step(statement)
+        if status == SQLITE_DONE { return nil }
+        guard status == SQLITE_ROW else { throw error() }
+        return try decoder.decode(type, from: data(statement, column: 0))
+    }
+
+    public func saveDocument<Value: Encodable & Sendable>(_ value: Value, key: String) throws {
+        let statement = try prepare("INSERT INTO sync_documents(key,payload) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload")
+        defer { sqlite3_finalize(statement) }
+        bind(key, to: statement, at: 1); bind(try encoder.encode(value), to: statement, at: 2)
+        try stepWrite(statement)
     }
 
     public func saveWorkspace(_ workspace: SyncWorkspace) throws {

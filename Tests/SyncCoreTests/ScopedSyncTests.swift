@@ -255,7 +255,7 @@ final class ScopedSyncTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         var pointer: OpaquePointer?
         XCTAssertEqual(sqlite3_open(url.path, &pointer), SQLITE_OK)
-        XCTAssertEqual(sqlite3_exec(pointer, "PRAGMA user_version=2; CREATE TABLE future_data(value TEXT)", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(pointer, "PRAGMA user_version=3; CREATE TABLE future_data(value TEXT)", nil, nil, nil), SQLITE_OK)
         sqlite3_close(pointer)
         XCTAssertThrowsError(try SyncStore(url: url))
         XCTAssertEqual(sqlite3_open(url.path, &pointer), SQLITE_OK)

@@ -26,7 +26,29 @@ public actor SyncExecutor {
     }
     public func cancel() { cancelled = true }
 
-    public func execute(plan: SyncPlan, selectedIDs: Set<UUID>, decisions: MatchDecisions, providers: [MusicService: any MusicProvider], isDemo: Bool = false, progress: @escaping @Sendable (SyncProgress) async -> Void = { _ in }) async throws -> RunRecord {
+    /// Transfer a reviewed local export to Spotify. Only Spotify is re-read;
+    /// the local document is immutable evidence, never a fabricated cloud read.
+    public func executeSnapshotTransfer(source: SnapshotTransferSource, destination: LibrarySnapshot,
+                                        operations: [SyncOperation], decisions: MatchDecisions,
+                                        provider: any MusicProvider, isDemo: Bool = false, runID: UUID? = nil,
+                                        progress: @escaping @Sendable (SyncProgress) async -> Void = { _ in }) async throws -> RunRecord {
+        guard !active, !operations.isEmpty, destination.account.service == .spotify,
+              provider.service == .spotify, destination.complete,
+              Set(operations.map(\.id)).count == operations.count,
+              operations.allSatisfy({ $0.service == .spotify && $0.blockedReason == nil &&
+                  ([.createPlaylist, .addPlaylistTracks, .saveTracks, .saveAlbums].contains($0.kind) || source.allowsDestructive == true) &&
+                  $0.tracks.allSatisfy({ $0.available && !$0.isLocal && !$0.playableID.isEmpty }) }) else {
+            throw SyncExecutionError.invalidSelection
+        }
+        let plan = SyncPlan(mode: .appleMusicBase, snapshots: [destination], operations: operations)
+        let steps = operations.flatMap { MutationSteps.prepare($0, limits: provider.mutationLimits) }
+        var record = RunRecord(summary: RunSummary(id: runID ?? UUID(), totalCount: steps.count, message: "Verificando el lote aprobado desde XML…"),
+                               plan: plan, decisions: decisions, executions: steps, checkpoints: [destination], isDemo: isDemo)
+        record.snapshotSource = source
+        return try await run(record, providers: [.spotify: provider], resuming: false, progress: progress)
+    }
+
+    public func execute(plan: SyncPlan, selectedIDs: Set<UUID>, decisions: MatchDecisions, providers: [MusicService: any MusicProvider], isDemo: Bool = false, runID: UUID? = nil, scopedApproval: Bool = false, progress: @escaping @Sendable (SyncProgress) async -> Void = { _ in }) async throws -> RunRecord {
         guard !active else { throw SyncExecutionError.busy }
         guard !selectedIDs.isEmpty, selectedIDs.isSubset(of: Set(plan.executable.map(\.id))) else { throw SyncExecutionError.invalidSelection }
         let selected = plan.operations.filter { selectedIDs.contains($0.id) }
@@ -39,14 +61,20 @@ public actor SyncExecutor {
             return lhs == rhs ? $0.offset < $1.offset : lhs < rhs
         }.map(\.element)
         let steps = ordered.flatMap { MutationSteps.prepare($0, limits: providers[$0.service]?.mutationLimits) }
-        let summary = RunSummary(totalCount: steps.count, message: "Verificando el estado aprobado…")
-        let record = RunRecord(summary: summary, plan: plan, decisions: decisions, executions: steps, checkpoints: plan.snapshots, isDemo: isDemo)
+        let summary = RunSummary(id: runID ?? UUID(), totalCount: steps.count, message: "Verificando el estado aprobado…")
+        var approvedPlan = plan
+        if scopedApproval { approvedPlan.operations = ordered }
+        var record = RunRecord(summary: summary, plan: approvedPlan, decisions: decisions, executions: steps, checkpoints: plan.snapshots, isDemo: isDemo)
+        record.scopedApproval = scopedApproval
         return try await run(record, providers: providers, resuming: false, progress: progress)
     }
 
     public func resume(id: UUID, providers: [MusicService: any MusicProvider], progress: @escaping @Sendable (SyncProgress) async -> Void = { _ in }) async throws -> RunRecord {
         guard !active else { throw SyncExecutionError.busy }
         guard let record = try await store.load(id: id), record.summary.status != .completed else { throw SyncExecutionError.invalidSelection }
+        guard record.snapshotSource == nil, record.scopedApproval != true else {
+            throw SyncExecutionError.unsafeResume("Las transferencias XML interrumpidas sólo se comprueban mediante lectura. Prepará y confirmá lo pendiente otra vez.")
+        }
         return try await run(record, providers: providers, resuming: true, progress: progress)
     }
 
@@ -95,6 +123,8 @@ public actor SyncExecutor {
             guard let saved = try await store.load(id: record.id), saved.summary.status != .completed else { throw SyncExecutionError.invalidSelection }
             record = saved
             markInterruptedWritesUnknown(&record)
+        } else if try await store.load(id: record.id) != nil {
+            throw SyncExecutionError.invalidSelection
         }
         var unexpectedChanges = false
         do {
@@ -259,7 +289,7 @@ public actor SyncExecutor {
                     }
                 }
                 let remaining: SyncPlan
-                if record.plan.undoOfRunID != nil {
+                if record.snapshotSource != nil || record.scopedApproval == true || record.plan.undoOfRunID != nil {
                     let verifiedParents = Set(record.executions.filter { $0.state == .verified }.map { $0.parentOperationID ?? $0.operation.id })
                     remaining = SyncPlan(mode: record.plan.mode, snapshots: final,
                         operations: record.plan.operations.filter { !verifiedParents.contains($0.id) }, issues: record.plan.issues)
@@ -269,7 +299,11 @@ public actor SyncExecutor {
                 record.remainingPlan = remaining
                 if remaining.operations.isEmpty && remaining.issues.isEmpty && final.allSatisfy(\.complete) {
                     record.summary.status = .completed
-                    record.summary.message = "El alcance seleccionado está igualado y fue verificado mediante una nueva lectura."
+                    if record.snapshotSource != nil {
+                        record.summary.message = "Lote aprobado desde XML aplicado y verificado en Spotify. La presencia en Música corresponde a la exportación indicada."
+                    } else if record.scopedApproval == true {
+                        record.summary.message = "Lote confirmado aplicado y verificado mediante lectura. Las demás diferencias siguen en su comparación."
+                    } else { record.summary.message = "El alcance seleccionado está igualado y fue verificado mediante una nueva lectura." }
                 } else {
                     record.summary.status = .partial
                     record.summary.message = "Cambios aplicados y verificados. Quedan \(remaining.operations.count) operaciones y \(remaining.issues.count) observaciones por resolver."
@@ -305,6 +339,20 @@ public actor SyncExecutor {
     }
 
     private func requireCompleteBackup(_ record: RunRecord) throws {
+        if let source = record.snapshotSource {
+            guard source.libraryID == source.library.id, source.documentDigest == source.library.documentDigest,
+                  !source.documentDigest.isEmpty, source.library.inventory != nil,
+                  record.plan.snapshots.count == 1, record.checkpoints.count == 1,
+                  record.plan.snapshots[0].account.service == .spotify, record.checkpoints[0].account.service == .spotify,
+                  record.plan.snapshots.allSatisfy(\.complete), record.checkpoints.allSatisfy(\.complete),
+                  record.executions.compactMap(\.before).allSatisfy(\.complete),
+                  record.plan.operations.allSatisfy({ $0.service == .spotify &&
+                    ([.createPlaylist, .addPlaylistTracks, .saveTracks, .saveAlbums].contains($0.kind) ||
+                     (source.allowsDestructive == true && source.library.complete && source.library.inventory?.playlistsComplete == true)) }) else {
+                throw SyncExecutionError.unsafeResume("La transferencia no conserva una exportación aprobada o un inventario Spotify completo.")
+            }
+            return
+        }
         guard record.plan.snapshots.count == 2, Set(record.plan.snapshots.map { $0.account.service }).count == 2,
               record.checkpoints.count == 2, Set(record.checkpoints.map { $0.account.service }).count == 2,
               record.plan.snapshots.allSatisfy(\.complete), record.checkpoints.allSatisfy(\.complete),
