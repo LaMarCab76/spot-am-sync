@@ -14,6 +14,8 @@ final class ManualChecklistModel: ObservableObject {
     @Published private(set) var markedIDs: Set<String> = []
     @Published private(set) var isDemo = false
     @Published private(set) var canCancel = false
+    @Published private(set) var libraryProgress: LibraryReadProgress?
+    private var libraryReadID: UUID?
     @Published private(set) var statusText = "Cargando el checklist guardado…"
     @Published private(set) var errorMessage: String?
     @Published private(set) var hasUnsavedChanges = false
@@ -146,6 +148,10 @@ final class ManualChecklistModel: ObservableObject {
     }
 
     func generate(isDemo: Bool, fetch: @escaping @MainActor () async throws -> LibrarySnapshot) {
+        generate(isDemo: isDemo, fetchWithProgress: { _ in try await fetch() })
+    }
+
+    func generate(isDemo: Bool, fetchWithProgress: @escaping @MainActor (@escaping LibraryReadObserver) async throws -> LibrarySnapshot) {
         // The demo never calls a provider, even if a caller supplies one.
         if isDemo { loadDemo(); return }
         guard isHydrated, !isBusy, !self.isDemo else { return }
@@ -154,16 +160,20 @@ final class ManualChecklistModel: ObservableObject {
             return
         }
         begin("Leyendo tu biblioteca de Spotify…", cancellable: true)
+        let readID = UUID(); libraryReadID = readID
         workTask = Task {
             defer { finish() }
             do {
-                let source = try await fetch()
+                let source = try await fetchWithProgress { [self] update in
+                    await self.receiveLibraryProgress(update, id: readID)
+                }
                 try Task.checkCancellation()
                 guard source.account.service == .spotify else {
                     errorMessage = "El checklist necesita una lectura de Spotify."
                     statusText = "No se generó un nuevo checklist."
                     return
                 }
+                libraryReadID = nil; libraryProgress = nil
                 statusText = "Comparando Spotify con la exportación de Música…"
                 let updatedReport = try await Self.inBackground {
                     ManualChecklistPlanner.make(source: source, library: library)
@@ -181,7 +191,7 @@ final class ManualChecklistModel: ObservableObject {
                 if Task.isCancelled {
                     statusText = "Actualización cancelada. Se conserva el checklist anterior."
                 } else {
-                    errorMessage = "No se pudo actualizar desde Spotify. Revisá la conexión en Conexiones y volvé a intentar."
+                    errorMessage = (error as? ProviderError)?.localizedDescription ?? "No se pudo actualizar desde Spotify. Revisá la conexión en Conexiones y volvé a intentar."
                     statusText = "El checklist anterior sigue disponible con su fecha original."
                 }
             }
@@ -257,6 +267,7 @@ final class ManualChecklistModel: ObservableObject {
     func cancel() {
         guard isBusy, canCancel else { return }
         canCancel = false
+        libraryReadID = nil; libraryProgress = nil
         statusText = "Cancelando…"
         workTask?.cancel()
         importPanel?.cancel(nil)
@@ -360,6 +371,11 @@ final class ManualChecklistModel: ObservableObject {
         }
     }
 
+    private func receiveLibraryProgress(_ update: LibraryReadProgress, id: UUID) {
+        guard libraryReadID == id, canCancel, !Task.isCancelled else { return }
+        libraryProgress = update; statusText = update.statusText
+    }
+
     private func begin(_ message: String, cancellable: Bool) {
         isBusy = true
         canCancel = cancellable
@@ -368,6 +384,7 @@ final class ManualChecklistModel: ObservableObject {
     }
 
     private func finish() {
+        libraryReadID = nil; libraryProgress = nil
         canCancel = false
         isBusy = false
         workTask = nil

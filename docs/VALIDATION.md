@@ -1,5 +1,17 @@
 # Validación local
 
+## Lectura progresiva de Spotify — 0.2.2
+
+- El inventario se lee en este orden: canciones guardadas, álbumes guardados y sus canciones, listado completo de playlists y contenido de cada playlist. La paginación publica avances por página; las playlists pendientes no se presentan como vacías.
+- Se eliminaron las consultas individuales automáticas para completar ISRC durante la lectura. Los códigos recibidos se reutilizan sólo entre observaciones compatibles dentro de la misma lectura. Se conservan conflictos, restricciones, procedencia, orden y repeticiones. Las búsquedas y consultas puntuales de catálogo siguen disponibles para resolver coincidencias.
+- El checklist XML y el flujo automático reciben el mismo contrato de progreso. Los eventos de una carga cancelada o anterior se descartan. Una cancelación o un error de cuota conserva el checklist guardado, sus marcas y el XML.
+- La espera de reintento es visible. Un 429 terminal detiene toda la lectura y bloquea nuevas solicitudes de ese proveedor hasta el plazo indicado. Las colecciones inaccesibles y los cambios de total conservan la cobertura parcial.
+- `bash scripts/test.sh`: **300 pruebas aprobadas**, sin fallos: 180 de SyncCore, 95 de MusicProviders y 25 de SpotAMSync. Se ejecutó fuera del sandbox para permitir el callback local de las pruebas OAuth; no se usaron cuentas ni credenciales reales.
+- Diez regresiones nuevas cubren orden y progreso por página, 1.000 canciones sin ISRC, cuota global y reintento inmediato bloqueado, cancelación antes de la página siguiente y reutilización del proveedor, cambios de total, conflictos de metadatos y posiciones duplicadas, progreso tardío entre cargas manuales, conservación del checklist ante cuota, progreso/cancelación del flujo automático y notificación de espera antes de un reintento HTTP.
+- Caso sintético de 1.000 canciones sin ISRC: **22 consultas de inventario** (20 páginas de canciones, álbumes y playlists), más la consulta de perfil al conectar; **cero consultas individuales de canciones**. Esta medición es un conteo de solicitudes, no un tiempo de respuesta de Spotify.
+- El componente SwiftUI real se compiló en una app temporal con datos ficticios. Se verificaron por accesibilidad y captura nativa las etapas, contadores, estados pendiente/leyendo/completa/parcial, nombres largos y espera de reintento. El harness temporal no accede a cuentas ni almacenamiento habitual.
+- Build de producción **0.2.2 (4)** instalado en `/Applications/SpotAM Sync.app`, con copia del paquete anterior. Firma verificada y ejecutable idéntico al build (`d0592fa3456c61104c60d7c8416e8d40b6f55bdd349223b3afe83de680b629a0`). Apertura nativa comprobada; los seis archivos de datos habituales conservaron sus hashes SHA-256 tras la actualización y apertura. La nueva carga con la cuenta real queda pendiente de reconexión del usuario.
+
 ## Callback local de Spotify — 0.2.1
 
 Se reprodujo en macOS el error de inicio del callback: configurar `127.0.0.1:43821` en `requiredLocalEndpoint` y pasar además `on: 43821` a `NWListener` arroja `POSIX EINVAL` durante el inicializador, antes de abrir el navegador. Usar únicamente el endpoint local permite crear el listener y alcanzar el estado `ready` en el mismo puerto.

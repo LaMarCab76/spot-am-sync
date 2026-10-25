@@ -18,6 +18,8 @@ final class AppModel: ObservableObject {
     @Published var decisions = MatchDecisions()
     @Published var phase: AppPhase = .idle
     @Published var statusText = "Conectá tus cuentas para comparar sus bibliotecas."
+    @Published private(set) var libraryProgress: LibraryReadProgress?
+    private var libraryReadID: UUID?
     @Published var progress: Double = 0
     @Published var completedCount = 0
     @Published var totalCount = 0
@@ -93,8 +95,8 @@ final class AppModel: ObservableObject {
     func generateManualChecklist() {
         guard canGenerateManualChecklist, let provider = providers[.spotify],
               let expected = accounts[.spotify] else { return }
-        manualChecklist.generate(isDemo: false) {
-            let snapshot = try await provider.fetchLibrary()
+        manualChecklist.generate(isDemo: false, fetchWithProgress: { observer in
+            let snapshot = try await provider.fetchLibrary(progress: observer)
             try Task.checkCancellation()
             guard snapshot.account.service == .spotify,
                   snapshot.account.id == expected.id,
@@ -102,7 +104,7 @@ final class AppModel: ObservableObject {
                 throw SyncExecutionError.stale("La conexión de Spotify cambió mientras se leía la biblioteca. Volvé a generar la lista.")
             }
             return snapshot
-        }
+        })
     }
 
     func connectSpotify() {
@@ -193,7 +195,7 @@ final class AppModel: ObservableObject {
                     try Task.checkCancellation()
                     guard let provider = providers[service] else { throw SyncExecutionError.missingProvider }
                     statusText = "Analizando \(service.name)…"
-                    fresh.append(try await provider.fetchLibrary())
+                    fresh.append(try await readLibrary(provider))
                     try Task.checkCancellation()
                     capabilities[service] = await provider.capabilities()
                 }
@@ -299,7 +301,24 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func readLibrary(_ provider: any MusicProvider) async throws -> LibrarySnapshot {
+        try Task.checkCancellation()
+        let id = UUID(); libraryReadID = id; libraryProgress = nil
+        defer { if libraryReadID == id { libraryReadID = nil; libraryProgress = nil } }
+        let snapshot = try await provider.fetchLibrary(progress: { [weak self] update in
+            await self?.receiveLibraryProgress(update, id: id)
+        })
+        try Task.checkCancellation()
+        return snapshot
+    }
+
+    private func receiveLibraryProgress(_ update: LibraryReadProgress, id: UUID) {
+        guard libraryReadID == id, !Task.isCancelled else { return }
+        libraryProgress = update; statusText = update.statusText
+    }
+
     func cancel() {
+        libraryReadID = nil; libraryProgress = nil
         if phase == .syncing {
             executionStartCancelled = true
             statusText = "Deteniendo nuevas operaciones y comprobando la petición en curso…"
@@ -564,7 +583,7 @@ extension AppModel {
                 for service in MusicService.allCases {
                     try Task.checkCancellation()
                     guard let provider = providers[service], let expected = accounts[service] else { throw SyncExecutionError.missingProvider }
-                    let snapshot = try await provider.fetchLibrary()
+                    let snapshot = try await readLibrary(provider)
                     try Task.checkCancellation()
                     guard snapshot.account == expected else { throw SyncExecutionError.stale("Cambió la conexión durante la lectura.") }
                     fresh.append(snapshot); capabilities[service] = await provider.capabilities()
@@ -572,7 +591,8 @@ extension AppModel {
                 snapshots = fresh
                 if !isDemo, let stored = try await store?.loadDecisions(accountPair: accountPair(fresh)) { decisions = stored }
                 statusText = "Elegí las playlists y prepará una propuesta."
-            } catch { errorMessage = error.localizedDescription }
+            } catch is CancellationError { statusText = "Lectura cancelada. Se conservan las bibliotecas anteriores." }
+            catch { errorMessage = error.localizedDescription }
             phase = .idle
         }
     }
@@ -660,7 +680,7 @@ extension AppModel {
                 for service in MusicService.allCases {
                     try Task.checkCancellation()
                     guard let provider = providers[service] else { throw SyncExecutionError.missingProvider }
-                    current.append(try await provider.fetchLibrary()); capabilities[service] = await provider.capabilities()
+                    current.append(try await readLibrary(provider)); capabilities[service] = await provider.capabilities()
                 }
                 try Task.checkCancellation()
                 guard try await store.unresolvedRuns(accountIDs: accounts.mapValues(\.id)).isEmpty else {

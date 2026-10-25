@@ -298,6 +298,7 @@ public protocol MusicProvider: Sendable {
     func account() async throws -> ConnectedAccount
     func capabilities() async -> ProviderCapabilities
     func fetchLibrary() async throws -> LibrarySnapshot
+    func fetchLibrary(progress: @escaping LibraryReadObserver) async throws -> LibrarySnapshot
     func searchTracks(matching track: Track) async throws -> CatalogSearchResult<Track>
     func searchAlbums(matching album: Album) async throws -> CatalogSearchResult<Album>
     func searchCatalog(_ query: TrackSearchQuery) async throws -> TrackSearchResult
@@ -308,4 +309,7 @@ public protocol MusicProvider: Sendable {
 
 extension MusicProvider {
     public var mutationLimits: MutationLimits? { nil }
+    public func fetchLibrary(progress: @escaping LibraryReadObserver) async throws -> LibrarySnapshot {
+        try await fetchLibrary()
+    }
 }

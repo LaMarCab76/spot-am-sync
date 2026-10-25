@@ -59,7 +59,8 @@ struct ProviderHTTP: Sendable {
         try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     }
 
-    func send(_ request: URLRequest, budget: CatalogRequestBudget? = nil) async throws -> ProviderHTTPResponse {
+    func send(_ request: URLRequest, budget: CatalogRequestBudget? = nil,
+              onRetry: (@Sendable (TimeInterval) async -> Void)? = nil) async throws -> ProviderHTTPResponse {
         let read = request.httpMethod == nil || request.httpMethod == "GET"
         var waited: TimeInterval = 0
         for attempt in 0..<(read ? retry.maximumReadAttempts : 1) {
@@ -80,6 +81,8 @@ struct ProviderHTTP: Sendable {
             let delay = Self.retryAfter(response) ?? pow(2, Double(attempt))
             if read && retryable && attempt + 1 < retry.maximumReadAttempts &&
                 delay <= retry.maximumDelay && waited + delay <= retry.maximumTotalDelay {
+                await onRetry?(delay)
+                try Task.checkCancellation()
                 try await sleep(delay); waited += delay; continue
             }
             if !read {
@@ -188,9 +191,11 @@ struct CollectedPage: Sendable {
 /// a genuine empty collection from a forbidden/malformed/truncated collection.
 func collectPages(origin: APIOrigin, path: String, initial: JSONValue? = nil,
                   spotify: Bool, envelope: String? = nil, maximumPages: Int = 10_000, preserveAuthorizationFailure: Bool = false,
+                  onPage: (([JSONValue], Int, Int?) async throws -> Void)? = nil,
                   fetch: (URL) async throws -> JSONValue) async throws -> CollectedPage {
     var output = CollectedPage(), next: String? = path, first = initial
     var visited = Set<String>(), expected: Int?
+    var stableTotal = true
     do {
         let expectedPath = try origin.url(path).path
         while let current = next {
@@ -216,11 +221,13 @@ func collectPages(origin: APIOrigin, path: String, initial: JSONValue? = nil,
                 throw ProviderError.invalidResponse("La página de Spotify no declara total, next u offset coherentes.")
             }
             if let total {
-                if let expected, expected != total { output.complete = false; output.notes.append("El total cambió durante la lectura.") }
+                if let expected, expected != total { stableTotal = false; output.complete = false; output.notes.append("El total cambió durante la lectura.") }
                 expected = total
             }
             output.items.append(contentsOf: values)
             next = page["next"].string
+            try await onPage?(values, output.items.count, stableTotal && (expected ?? 0) >= output.items.count ? expected : nil)
+            try Task.checkCancellation()
             if values.isEmpty && next != nil { throw ProviderError.invalidResponse("Página vacía con continuación; inventario incompleto.") }
         }
         if let expected, output.items.count != expected {

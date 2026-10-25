@@ -129,11 +129,11 @@ final class CatalogSearchTests: XCTestCase {
 
     func testManualChecklistInventoryIsNotLimitedByCatalogSearchPageBudget() async throws {
         func track(_ id: String) -> [String: Any] { var result = spTrack(id); result["explicit"] = false; return result }
-        let t = ScriptedTransport([spotifyMe, .init("/v1/me/playlists", json: spPage()),
+        let t = ScriptedTransport([spotifyMe,
             .init("/v1/me/tracks", json: spPage([["track": track("a")]], total: 3, next: "/v1/me/tracks?offset=1")),
             .init("/v1/me/tracks", json: spPage([["track": track("b")]], offset: 1, total: 3, next: "/v1/me/tracks?offset=2")),
             .init("/v1/me/tracks", json: spPage([["track": track("c")]], offset: 2, total: 3)),
-            .init("/v1/me/albums", json: spPage())])
+            .init("/v1/me/albums", json: spPage()), .init("/v1/me/playlists", json: spPage())])
         let provider = try await spotify(t), inventory = try await provider.fetchLibrary()
         let report = ManualChecklistPlanner.make(source: inventory, library: ManualMusicLibrary(id: "xml:fixture", fileName: "Fixture.xml", tracks: []))
         XCTAssertTrue(inventory.complete)

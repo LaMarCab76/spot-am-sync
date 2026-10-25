@@ -4,6 +4,17 @@ import SyncCore
 
 @MainActor
 final class WorkspaceIntegrationTests: XCTestCase {
+    func testAutomaticLibraryReadDisplaysProgressAndDiscardsCancelledUpdates() async throws {
+        let gate = ReadGate(), (model, providers) = try await model(gate: gate)
+        model.refreshLibraries()
+        try await wait { model.libraryProgress?.received == 50 }
+        XCTAssertTrue(model.displayedStatusText.contains("Tus me gusta"))
+        XCTAssertTrue(model.snapshots.isEmpty)
+        model.cancel(); XCTAssertNil(model.libraryProgress)
+        await gate.release(); try await wait { !model.isBusy }
+        XCTAssertNil(model.libraryProgress); XCTAssertTrue(model.snapshots.isEmpty)
+        for provider in providers.values { let writes = await provider.writes; XCTAssertEqual(writes, 0) }
+    }
     private var directory: URL!
     override func setUp() async throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -171,6 +182,12 @@ private actor CountingProvider: MusicProvider {
     func account() async throws -> ConnectedAccount { try await inner.account() }
     func capabilities() async -> ProviderCapabilities { await inner.capabilities() }
     func fetchLibrary() async throws -> LibrarySnapshot { await gate?.wait(); return try await inner.fetchLibrary() }
+    func fetchLibrary(progress: @escaping LibraryReadObserver) async throws -> LibrarySnapshot {
+        if service == .spotify { await progress(.init(stage: .savedTracks, received: 50, total: 100)) }
+        await gate?.wait()
+        if service == .spotify { await progress(.init(stage: .playlistTracks, received: 2, total: 2)) }
+        return try await inner.fetchLibrary()
+    }
     func searchTracks(matching track: Track) async throws -> CatalogSearchResult<Track> { try await inner.searchTracks(matching: track) }
     func searchAlbums(matching album: Album) async throws -> CatalogSearchResult<Album> { try await inner.searchAlbums(matching: album) }
     func perform(_ operation: SyncOperation) async throws -> MutationReceipt { writes += 1; return try await inner.perform(operation) }

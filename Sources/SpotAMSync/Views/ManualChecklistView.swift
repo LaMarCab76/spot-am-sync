@@ -130,10 +130,13 @@ struct ManualChecklistView: View {
 
     @ViewBuilder
     private var feedback: some View {
+        if let progress = manual.libraryProgress { LibraryReadProgressView(progress: progress) }
         HStack(spacing: 9) {
-            if manual.isBusy { ProgressView().controlSize(.small) }
-            Text(manual.statusText).font(.callout).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if manual.libraryProgress == nil {
+                if manual.isBusy { ProgressView().controlSize(.small) }
+                Text(manual.statusText).font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Spacer(minLength: 0)
             if manual.canCancel { Button("Cancelar") { manual.cancel() } }
         }

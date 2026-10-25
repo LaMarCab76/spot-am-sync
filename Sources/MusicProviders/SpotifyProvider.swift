@@ -20,9 +20,11 @@ public actor SpotifyProvider: MusicProvider {
     private var busy = false
     private var authorizationTask: Task<URL, Error>?
     private var refreshTask: Task<SpotifyCredential, Error>?
-    private var trackCache: [String: Track] = [:]
     private var searchCache: [TrackSearchQuery: (Date, TrackSearchResult)] = [:]
     private var searchResumeAt = Date.distantPast
+    private var apiResumeAt = Date.distantPast
+    private var readObserver: LibraryReadObserver?
+    private var readProgress: LibraryReadProgress?
 
     public init(clientID: String) {
         self.clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -51,7 +53,7 @@ public actor SpotifyProvider: MusicProvider {
         try begin(); defer { busy = false; authorizationTask = nil }
         guard !clientID.isEmpty else { throw ProviderError.unsupported("Ingresá el Client ID público de tu aplicación Spotify.") }
         generation = UUID(); let epoch = generation
-        connected = nil; credential = nil; trackCache.removeAll()
+        connected = nil; credential = nil
         searchCache.removeAll(); searchResumeAt = .distantPast
         do {
             if let stored = try credentialStore.load(clientID: clientID), SpotifyPKCE.scopes.isSubset(of: stored.scopes) {
@@ -78,7 +80,7 @@ public actor SpotifyProvider: MusicProvider {
     }
     public func disconnect() async throws {
         generation = UUID(); authorizationTask?.cancel(); refreshTask?.cancel()
-        connected = nil; credential = nil; trackCache.removeAll()
+        connected = nil; credential = nil
         try credentialStore.delete(clientID: clientID)
     }
     private func check(_ epoch: UUID) throws {
@@ -121,17 +123,19 @@ public actor SpotifyProvider: MusicProvider {
     }
     private func request(_ url: URL, method: String = "GET", body: Data? = nil, budget: CatalogRequestBudget? = nil) async throws -> ProviderHTTPResponse {
         _ = try APIOrigin.spotify.url(url.absoluteString)
+        try Task.checkCancellation()
+        if apiResumeAt > Date() { throw ProviderError.rateLimited(seconds: Int(ceil(apiResumeAt.timeIntervalSinceNow))) }
         let epoch = generation, token = try await accessToken()
         try check(epoch)
         var request = URLRequest(url: url); request.httpMethod = method; request.httpBody = body
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         let response: ProviderHTTPResponse
-        do { response = try await http.send(request, budget: budget) }
+        do { response = try await sendAPI(request, budget: budget) }
         catch ProviderError.unauthorized where method == "GET" {
             let token = try await accessToken(forceRefresh: true); try check(epoch)
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            response = try await http.send(request, budget: budget)
+            response = try await sendAPI(request, budget: budget)
         }
         if method == "GET" { try check(epoch) }
         else if generation != epoch || Task.isCancelled {
@@ -139,61 +143,159 @@ public actor SpotifyProvider: MusicProvider {
         }
         return response
     }
+    private func sendAPI(_ request: URLRequest, budget: CatalogRequestBudget?) async throws -> ProviderHTTPResponse {
+        do {
+            return try await http.send(request, budget: budget, onRetry: { [weak self] seconds in
+                await self?.reportWait(seconds)
+            })
+        } catch ProviderError.rateLimited(let seconds) {
+            apiResumeAt = Date().addingTimeInterval(Double(seconds))
+            await reportWait(Double(seconds))
+            throw ProviderError.rateLimited(seconds: seconds)
+        }
+    }
+    private func reportWait(_ seconds: TimeInterval) async {
+        guard var update = readProgress else { return }
+        update.waitingUntil = Date().addingTimeInterval(seconds)
+        readProgress = update
+        await readObserver?(update)
+    }
+    private func report(_ update: LibraryReadProgress) async throws {
+        try Task.checkCancellation()
+        readProgress = update
+        await readObserver?(update)
+        try Task.checkCancellation()
+    }
     private func get(_ url: URL, budget: CatalogRequestBudget? = nil) async throws -> JSONValue { try JSONValue.decode(await request(url, budget: budget).data) }
-    private func pages(_ path: String, initial: JSONValue? = nil, envelope: String? = nil) async throws -> CollectedPage {
-        try await collectPages(origin: .spotify, path: path, initial: initial, spotify: true, envelope: envelope) { try await self.get($0) }
+    private func pages(_ path: String, initial: JSONValue? = nil, envelope: String? = nil,
+                       onPage: (([JSONValue], Int, Int?) async throws -> Void)? = nil) async throws -> CollectedPage {
+        let result = try await collectPages(origin: .spotify, path: path, initial: initial, spotify: true, envelope: envelope,
+                                            onPage: onPage) { try await self.get($0) }
+        // A quota response applies to the entire read: do not continue with another collection.
+        if case .rateLimited(let seconds) = result.failure { throw ProviderError.rateLimited(seconds: seconds) }
+        return result
     }
 
     public func fetchLibrary() async throws -> LibrarySnapshot {
-        try begin(); defer { busy = false }
-        let account = try account()
-        trackCache.removeAll()
+        try await fetchLibrary(progress: { _ in })
+    }
+
+    public func fetchLibrary(progress: @escaping LibraryReadObserver) async throws -> LibrarySnapshot {
+        try begin()
+        defer { busy = false; readObserver = nil; readProgress = nil }
+        let account = try account(), epoch = generation
+        readObserver = progress
         searchCache.removeAll()
         var coverage = InventoryCoverage(), playlists: [Playlist] = [], savedTracks: [Track] = [], albums: [Album] = []
-        let playlistPage = try await pages("/v1/me/playlists?limit=50")
+
+        try await report(.init(stage: .savedTracks))
+        let tracksPage = try await pages("/v1/me/tracks?limit=50", onPage: { values, received, total in
+            for (index, value) in values.enumerated() {
+                let result = try await self.track(value["track"], fallback: "saved:\(received - values.count + index)")
+                savedTracks.append(result)
+                coverage.tracks = coverage.tracks && result.available && !result.isLocal
+            }
+            try await self.report(.init(stage: .savedTracks, received: received, total: total))
+        })
+        coverage.tracks = coverage.tracks && tracksPage.complete
+        coverage.notes += tracksPage.notes.map { "Canciones: " + $0 }
+
+        try await report(.init(stage: .savedAlbums))
+        let albumPage = try await pages("/v1/me/albums?limit=50", onPage: { _, received, total in
+            try await self.report(.init(stage: .savedAlbums, received: 0, total: total, itemName: "Listando álbumes: \(received) encontrados"))
+        })
+        coverage.albums = albumPage.complete; coverage.notes += albumPage.notes.map { "Álbumes: " + $0 }
+        for (index, value) in albumPage.items.enumerated() {
+            try await report(.init(stage: .savedAlbums, received: index, total: albumPage.items.count, itemName: value["album"]["name"].string))
+            let result = try await album(value["album"], fallback: "saved:\(index)", onPage: { _, received, total in
+                try await self.report(.init(stage: .savedAlbums, received: index, total: albumPage.items.count,
+                    itemName: value["album"]["name"].string, itemReceived: received, itemTotal: total))
+            })
+            albums.append(result); coverage.albums = coverage.albums && result.available && result.isCompleteAlbum
+            try await report(.init(stage: .savedAlbums, received: index + 1, total: albumPage.items.count))
+        }
+
+        var statuses: [LibraryReadProgress.PlaylistStatus] = []
+        try await report(.init(stage: .playlistList))
+        let playlistPage = try await pages("/v1/me/playlists?limit=50", onPage: { values, received, total in
+            for value in values {
+                statuses.append(.init(id: statuses.count, name: value["name"].nonempty ?? "Playlist no disponible",
+                    total: value["items"]["total"].int ?? value["tracks"]["total"].int))
+            }
+            try await self.report(.init(stage: .playlistList, received: received, total: total, playlists: statuses))
+        })
         coverage.playlists = playlistPage.complete; coverage.notes += playlistPage.notes.map { "Playlists: " + $0 }
         for (index, value) in playlistPage.items.enumerated() {
             guard let id = value["id"].nonempty else {
                 playlists.append(Playlist(id: "unknown:playlist:\(index)", name: "Playlist no disponible", editable: false,
-                                          ownership: .unknown, contentsComplete: false)); coverage.playlists = false; continue
+                                          ownership: .unknown, contentsComplete: false))
+                coverage.playlists = false; statuses[index].state = .partial
+                try await report(.init(stage: .playlistTracks, received: index + 1, total: statuses.count, playlists: statuses))
+                continue
             }
-            let content = try await playlistTracks(id)
+            statuses[index].state = .reading
+            try await report(.init(stage: .playlistTracks, received: index, total: statuses.count, itemName: statuses[index].name,
+                                   itemReceived: 0, itemTotal: statuses[index].total, playlists: statuses))
+            let content = try await playlistTracks(id, onPage: { _, received, total in
+                statuses[index].received = received; statuses[index].total = total
+                try await self.report(.init(stage: .playlistTracks, received: index, total: statuses.count,
+                    itemName: statuses[index].name, itemReceived: received, itemTotal: total, playlists: statuses))
+            })
             let declaredCount = value["items"]["total"].int ?? value["tracks"]["total"].int
-            let contentComplete = content.complete && (declaredCount == nil || declaredCount == content.tracks.count)
+            let contentComplete = content.complete && (declaredCount == nil || declaredCount == content.tracks.count) && value["name"].nonempty != nil
             let owner = value["owner"]["id"].nonempty
             let ownership: PlaylistOwnership = owner == account.id ? .owned : value["collaborative"].bool == true ? .collaborative : owner == nil ? .unknown : .followed
             playlists.append(Playlist(id: id, name: value["name"].nonempty ?? "Playlist sin nombre",
                 description: value["description"].string ?? "", tracks: content.tracks,
                 editable: ownership == .owned || ownership == .collaborative, ownership: ownership,
-                contentsComplete: contentComplete && value["name"].nonempty != nil, version: value["snapshot_id"].string))
+                contentsComplete: contentComplete, version: value["snapshot_id"].string))
             playlists[playlists.count - 1].artworkURL = value["images"].array?.first?["url"].nonempty
-            coverage.playlists = coverage.playlists && contentComplete && value["name"].nonempty != nil
+            coverage.playlists = coverage.playlists && contentComplete
             coverage.notes += content.notes.map { "Contenido de playlist: " + $0 }
-        }
-        let tracksPage = try await pages("/v1/me/tracks?limit=50")
-        coverage.tracks = tracksPage.complete; coverage.notes += tracksPage.notes.map { "Canciones: " + $0 }
-        for (index, value) in tracksPage.items.enumerated() {
-            let result = try await track(value["track"], fallback: "saved:\(index)")
-            savedTracks.append(result); coverage.tracks = coverage.tracks && result.available && !result.isLocal
-        }
-        let albumPage = try await pages("/v1/me/albums?limit=50")
-        coverage.albums = albumPage.complete; coverage.notes += albumPage.notes.map { "Álbumes: " + $0 }
-        for (index, value) in albumPage.items.enumerated() {
-            let result = try await album(value["album"], fallback: "saved:\(index)")
-            albums.append(result); coverage.albums = coverage.albums && result.available && result.isCompleteAlbum
+            statuses[index].state = contentComplete ? .complete : .partial
+            try await report(.init(stage: .playlistTracks, received: index + 1, total: statuses.count, playlists: statuses))
         }
         if Set(playlists.map(\.id)).count != playlists.count { coverage.playlists = false }
         if Set(savedTracks.map(\.id)).count != savedTracks.count { coverage.tracks = false }
         if Set(albums.map(\.id)).count != albums.count { coverage.albums = false }
         if !coverage.complete { coverage.notes.append("Los elementos desconocidos o no disponibles se conservan; no equivalen a una biblioteca vacía.") }
-        return LibrarySnapshot(account: account, playlists: playlists, savedTracks: savedTracks, savedAlbums: albums, coverage: coverage)
+        try check(epoch)
+        var snapshot = LibrarySnapshot(account: account, playlists: playlists, savedTracks: savedTracks, savedAlbums: albums, coverage: coverage)
+        reuseLibraryMetadata(in: &snapshot)
+        try check(epoch)
+        return snapshot
     }
-    private func playlistTracks(_ id: String) async throws -> (tracks: [Track], complete: Bool, notes: [String]) {
-        let page = try await pages("/v1/playlists/\(resourceID(id))/items?limit=50")
+
+    /// Reuse only compatible observations from this read. Contradictory codes and
+    /// restrictions are retained; membership/order/duplicates are never deduplicated.
+    private func reuseLibraryMetadata(in snapshot: inout LibrarySnapshot) {
+        struct Identity: Hashable {
+            let id: String, title: String, artist: String, album: String
+            let duration: Int
+            let explicit: Bool?
+            init(_ t: Track) { id = t.id; title = t.title; artist = t.artist; album = t.albumTitle; duration = t.durationMS; explicit = t.explicit }
+        }
+        let observations = snapshot.savedTracks + snapshot.savedAlbums.flatMap(\.tracks) + snapshot.playlists.flatMap(\.tracks)
+        var codes: [Identity: Set<String>] = [:]
+        for track in observations where track.available && !track.isLocal {
+            if let code = track.isrc { codes[Identity(track), default: []].insert(code) }
+        }
+        func complete(_ track: Track) -> Track {
+            var result = track
+            if result.isrc == nil, result.available, !result.isLocal, let known = codes[Identity(result)], known.count == 1 { result.isrc = known.first }
+            return result
+        }
+        snapshot.savedTracks = snapshot.savedTracks.map(complete)
+        for i in snapshot.savedAlbums.indices { snapshot.savedAlbums[i].tracks = snapshot.savedAlbums[i].tracks.map(complete) }
+        for i in snapshot.playlists.indices { snapshot.playlists[i].tracks = snapshot.playlists[i].tracks.map(complete) }
+    }
+
+    private func playlistTracks(_ id: String,
+                                onPage: (([JSONValue], Int, Int?) async throws -> Void)? = nil) async throws -> (tracks: [Track], complete: Bool, notes: [String]) {
+        let page = try await pages("/v1/playlists/\(resourceID(id))/items?limit=50", onPage: onPage)
         var tracks: [Track] = []
         for (index, wrapper) in page.items.enumerated() {
-            // Prefer the 2026 field even when null; the legacy field is only a fallback
-            // for older API modes, never a way to hide an unavailable current item.
+            try Task.checkCancellation()
             let item = wrapper.contains("item") ? wrapper["item"] : wrapper["track"]
             var result = try await track(item, fallback: "playlist:\(id):\(index)")
             if wrapper["is_local"].bool == true { result.isLocal = true; result.available = false }
@@ -201,7 +303,8 @@ public actor SpotifyProvider: MusicProvider {
         }
         return (tracks, page.complete && tracks.allSatisfy { $0.available && !$0.isLocal }, page.notes)
     }
-    private func track(_ value: JSONValue, fallback: String, albumTitle: String = "", enrich: Bool = true) async throws -> Track {
+    private func track(_ value: JSONValue, fallback: String, albumTitle: String = "") async throws -> Track {
+        try Task.checkCancellation()
         guard value["type"].string == "track", let id = value["id"].nonempty else {
             if value["is_local"].bool == true {
                 return Track(id: value["uri"].nonempty ?? "unknown:\(fallback)", title: value["name"].nonempty ?? "Archivo local",
@@ -220,38 +323,17 @@ public actor SpotifyProvider: MusicProvider {
         result.albumID = value["album"]["id"].nonempty
         result.releaseDate = value["album"]["release_date"].nonempty
         result.discNumber = value["disc_number"].int; result.trackNumber = value["track_number"].int
-        if enrich && result.isrc == nil && !result.isLocal {
-            if let cached = trackCache[id] {
-                if cached.available {
-                    result.isrc = cached.isrc
-                    if !valid && value["is_playable"].bool != false && value["restrictions"].isNull { result = cached }
-                }
-            } else {
-                do {
-                    let full = try await get(APIOrigin.spotify.url("/v1/tracks/\(resourceID(id))"))
-                    let enriched = try await track(full, fallback: fallback, albumTitle: result.albumTitle, enrich: false)
-                    guard enriched.id == id else { throw ProviderError.invalidResponse("El detalle de canción no coincide con el recurso solicitado.") }
-                    trackCache[id] = enriched
-                    if enriched.available {
-                        result.isrc = enriched.isrc
-                        if !valid && value["is_playable"].bool != false && value["restrictions"].isNull { result = enriched }
-                    }
-                } catch is CancellationError { throw CancellationError() }
-                catch ProviderError.unauthorized { throw ProviderError.unauthorized }
-                catch ProviderError.notConnected { throw ProviderError.notConnected }
-                catch { trackCache[id] = result } // ISRC enrichment is optional, identity is not.
-            }
-        }
         return result
     }
     private func artist(_ value: JSONValue) -> String { (value["artists"].array ?? []).compactMap { $0["name"].nonempty }.joined(separator: ", ") }
-    private func album(_ value: JSONValue, fallback: String) async throws -> Album {
+    private func album(_ value: JSONValue, fallback: String,
+                       onPage: (([JSONValue], Int, Int?) async throws -> Void)? = nil) async throws -> Album {
         guard let id = value["id"].nonempty, value["type"].string == "album" else {
             return Album(id: "unknown:album:\(fallback)", title: "Álbum no disponible", artist: "", isCompleteAlbum: false, available: false)
         }
         let title = value["name"].string ?? "Álbum sin datos"
         let page = try await pages("/v1/albums/\(resourceID(id))/tracks?limit=50",
-                                   initial: value["tracks"].isObject ? value["tracks"] : nil)
+                                   initial: value["tracks"].isObject ? value["tracks"] : nil, onPage: onPage)
         var tracks: [Track] = []
         for (index, item) in page.items.enumerated() { tracks.append(try await track(item, fallback: "album:\(id):\(index)", albumTitle: title)) }
         let complete = page.complete && value["total_tracks"].int == tracks.count && tracks.allSatisfy(\.available)
@@ -308,10 +390,10 @@ public actor SpotifyProvider: MusicProvider {
                 guard let id = value["id"].nonempty else { result.coverage = .partialFailure; continue }
                 let tracks = try await collectPages(origin: .spotify, path: "/v1/albums/\(resourceID(id))/tracks?limit=50", spotify: true, maximumPages: 2, preserveAuthorizationFailure: true) { try await self.get($0, budget: budget) }
                 observe(tracks)
-                for item in tracks.items { result.candidates.append(try await track(item, fallback: "album-search", albumTitle: value["name"].string ?? query.album, enrich: false)) }
+                for item in tracks.items { result.candidates.append(try await track(item, fallback: "album-search", albumTitle: value["name"].string ?? query.album)) }
             }
         } else {
-            for item in page.items { result.candidates.append(try await track(item, fallback: "search", enrich: false)) }
+            for item in page.items { result.candidates.append(try await track(item, fallback: "search")) }
         }
         if result.candidates.contains(where: { !$0.available }) { result.coverage = .partialFailure }
         if !result.candidates.isEmpty && result.coverage == .failed { result.coverage = .partialFailure }
@@ -339,7 +421,7 @@ public actor SpotifyProvider: MusicProvider {
             let page = try await catalogPages(query, type: "track", budget: budget)
             var candidates: [Track] = []
             for (i, item) in page.items.enumerated() {
-                candidates.append(try await self.track(item, fallback: "search:\(i)", enrich: false))
+                candidates.append(try await self.track(item, fallback: "search:\(i)"))
                 if item["type"].string != "track" || item["id"].nonempty == nil || item["name"].nonempty == nil || artist(item).isEmpty || item["duration_ms"].int == nil {
                     result.merge(.init(coverage: .failed, notes: ["Una canción de catálogo no tiene metadatos suficientes para compararla."]))
                 }
@@ -368,7 +450,7 @@ public actor SpotifyProvider: MusicProvider {
                 expanded += 1
                 let tracks = try await collectPages(origin: .spotify, path: "/v1/albums/\(resourceID(id))/tracks?limit=50", initial: item["tracks"].isObject ? item["tracks"] : nil, spotify: true, maximumPages: 2, preserveAuthorizationFailure: true) { try await self.get($0, budget: budget) }
                 for (i, value) in tracks.items.enumerated() {
-                    candidate.tracks.append(try await self.track(value, fallback: "album-search:\(i)", albumTitle: candidate.title, enrich: false))
+                    candidate.tracks.append(try await self.track(value, fallback: "album-search:\(i)", albumTitle: candidate.title))
                 }
                 candidate.isCompleteAlbum = tracks.complete && item["total_tracks"].int == candidate.tracks.count && !candidate.tracks.isEmpty && candidate.tracks.allSatisfy(\.available)
                 result.merge(.init(candidates: [candidate], coverage: tracks.searchCoverage, notes: tracks.notes))

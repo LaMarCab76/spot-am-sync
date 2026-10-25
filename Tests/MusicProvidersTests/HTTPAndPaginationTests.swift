@@ -62,6 +62,20 @@ final class HTTPAndPaginationTests: XCTestCase {
         let date = ProviderHTTPResponse(statusCode: 429, headers: ["Retry-After": "Thu, 01 Jan 1970 00:00:03 GMT"])
         XCTAssertEqual(ProviderHTTP.retryAfter(date, now: Date(timeIntervalSince1970: 0)), 3)
     }
+    func testRetryReportsWaitBeforeSleepingAndCancellationPreventsRetry() async throws {
+        let t = ScriptedTransport([.init("/v1/me/tracks", status: 429, headers: ["Retry-After": "1"])])
+        let observed = RetryObservation()
+        let http = ProviderHTTP(transport: t, retry: .init(), sleep: { seconds in
+            let reported = await observed.seconds; XCTAssertEqual(reported, seconds)
+            throw CancellationError()
+        })
+        do {
+            _ = try await http.send(URLRequest(url: APIOrigin.spotify.url("/v1/me/tracks")), onRetry: { await observed.record($0) })
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {}
+        let requests = await t.requests; XCTAssertEqual(requests.count, 1)
+        await t.assertExhausted()
+    }
     func testWritesNeverRetryAndServerFailureIsUncertain() async throws {
         for status in [429, 500] {
             let t = ScriptedTransport([.init("POST", "/v1/me/playlists", status: status, headers: ["Retry-After": "0"])])
@@ -88,4 +102,9 @@ final class HTTPAndPaginationTests: XCTestCase {
         do { _ = try await h.send(URLRequest(url: APIOrigin.spotify.url("/v1/me"))); XCTFail() }
         catch { XCTAssertFalse(error.localizedDescription.contains("secret_access_token")) }
     }
+}
+
+private actor RetryObservation {
+    var seconds: TimeInterval?
+    func record(_ value: TimeInterval) { seconds = value }
 }

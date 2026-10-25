@@ -6,6 +6,56 @@ import SyncCore
 
 @MainActor
 final class ManualChecklistModelTests: XCTestCase {
+    func testReadProgressCancellationAndOldObserverCannotReplaceNewRead() async throws {
+        try await withTemporaryStore { store, url in
+            let state = self.markedState(); try await store.save(state)
+            let bytes = try Data(contentsOf: url), model = try await self.hydratedModel()
+            let first = DeferredSnapshot(self.spotify()), second = DeferredSnapshot(self.spotify())
+            defer { first.release(); second.release() }
+            var oldObserver: LibraryReadObserver?
+            model.generate(isDemo: false, fetchWithProgress: { observer in
+                oldObserver = observer
+                await observer(.init(stage: .savedTracks, received: 50, total: 100))
+                let source = await first.fetch()
+                await observer(.init(stage: .playlistList, received: 999))
+                return source
+            })
+            try await self.waitUntil("progreso de la primera página") { first.hasStarted }
+            XCTAssertEqual(model.libraryProgress?.received, 50)
+            XCTAssertTrue(model.statusText.contains("Tus me gusta"))
+            XCTAssertEqual(try Data(contentsOf: url), bytes)
+            model.cancel(); XCTAssertNil(model.libraryProgress)
+            first.release(); try await self.waitUntil("cancelación") { !model.isBusy }
+            XCTAssertNil(model.libraryProgress); XCTAssertEqual(try Data(contentsOf: url), bytes)
+
+            model.generate(isDemo: false, fetchWithProgress: { observer in
+                await observer(.init(stage: .savedAlbums, received: 2, total: 5))
+                return await second.fetch()
+            })
+            try await self.waitUntil("segunda lectura") { second.hasStarted }
+            await oldObserver?(.init(stage: .playlistTracks, received: 999))
+            XCTAssertEqual(model.libraryProgress?.stage, .savedAlbums)
+            XCTAssertEqual(model.libraryProgress?.received, 2)
+            second.release(); try await self.waitUntil("segunda lectura terminada") { !model.isBusy }
+            XCTAssertNil(model.libraryProgress)
+            XCTAssertEqual(model.markedIDs, state.markedIDsByScope[state.report!.scopeID])
+        }
+    }
+
+    func testReadQuotaErrorExplainsWaitAndPreservesChecklist() async throws {
+        try await withTemporaryStore { store, url in
+            try await store.save(self.markedState())
+            let bytes = try Data(contentsOf: url), model = try await self.hydratedModel()
+            model.generate(isDemo: false, fetchWithProgress: { observer in
+                await observer(.init(stage: .savedTracks, waitingUntil: Date().addingTimeInterval(120)))
+                throw ProviderError.rateLimited(seconds: 120)
+            })
+            try await self.waitUntil("error de cuota") { !model.isBusy }
+            XCTAssertTrue(model.errorMessage?.contains("120 segundos") == true)
+            XCTAssertNil(model.libraryProgress); XCTAssertEqual(try Data(contentsOf: url), bytes)
+        }
+    }
+
     func testManualAlternativePersistsWithoutMarkingOrClaimingXMLPresence() async throws {
         try await withTemporaryStore { store, _ in
             var library = self.library()

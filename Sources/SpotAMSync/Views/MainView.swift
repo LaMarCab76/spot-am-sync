@@ -48,6 +48,9 @@ struct MainView: View {
                     }.font(.caption).foregroundStyle(SyncStyle.coral).padding(.horizontal, 28).padding(.vertical, 9)
                         .background(SyncStyle.coral.opacity(0.08))
                 }
+                if let progress = model.libraryProgress {
+                    LibraryReadProgressView(progress: progress).padding(.horizontal, 28).padding(.top, 12)
+                }
                 content.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .background(SyncStyle.background)

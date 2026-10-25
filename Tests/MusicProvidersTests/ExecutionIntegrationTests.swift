@@ -38,7 +38,9 @@ private actor LibraryHTTP: ProviderHTTPTransport {
         writes.append((path, ids))
         try await inspectWrite?()
         if writes.count == failAt {
-            if let failureStatus { return .init(statusCode: failureStatus) }
+            // This fixture checks journal recovery after rejection. Cooldown is
+            // covered separately; the synthetic server allows an immediate retry.
+            if let failureStatus { return .init(statusCode: failureStatus, headers: failureStatus == 429 ? ["Retry-After": "0"] : [:]) }
             throw URLError(.timedOut)
         }
         switch path {
